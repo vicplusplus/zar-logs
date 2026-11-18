@@ -1,0 +1,12 @@
+[package]
+name = "zar-logs-gearcalc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Mod, weapon and armour numbers of a loadout, computed from the game's own data files"
+
+[dependencies]
+# preserve_order keeps the objects of a class in the order of the dump. It only matters if two assets of one class
+# ever share a name: the reference tooling then keeps the later one, and so does this crate (see src/data.rs).
+serde_json = { version = "1", features = ["preserve_order"] }

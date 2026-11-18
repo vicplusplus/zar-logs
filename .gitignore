@@ -1,0 +1,6 @@
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+# per-machine data, should a data folder ever be pointed here: what was read from the game, recorded logs
+/cache/
+/logs/

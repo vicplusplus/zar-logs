@@ -1,0 +1,17 @@
+[package]
+name = "zar-logs-buildview"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Turns a player's captured loadout into the structured build the page shows"
+
+[dependencies]
+# float_roundtrip: numbers read back from the stored tables must be exactly the ones that were written
+serde_json = { version = "1", features = ["float_roundtrip"] }
+crc32fast = "1"
+zar-logs-core = { path = "../core" }
+zar-logs-gearcalc = { path = "../gearcalc" }
+zar-logs-namespack = { path = "../namespack" }
+zar-logs-unity = { path = "../unity" }
+zar-logs-layoutgen = { path = "../layoutgen" }

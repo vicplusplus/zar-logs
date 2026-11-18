@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "zar-logs",
+  "version": "0.1.0",
+  "identifier": "com.vicplusplus.zar-logs",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "publisher": "vicplusplus",
+    "shortDescription": "Damage meter and build viewer for Zombie Assault: Resurgence (unofficial, read-only)",
+    "homepage": "https://github.com/vicplusplus/zar-logs",
+    "licenseFile": "../LICENSE",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "skip"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

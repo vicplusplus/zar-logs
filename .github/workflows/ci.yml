@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # the reader uses Win32 process APIs: Windows only
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # the tests that need an installed copy of the game are marked `ignore` and do not run here
+      - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked

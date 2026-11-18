@@ -1,0 +1,20 @@
+[package]
+name = "zar-logs-unity"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Read-only reader for the game's Unity asset bundles: icons, ScriptableObject data, localisation text"
+
+[lib]
+name = "zar_logs_unity"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+# Block decompression of the bundles (every block in this game is LZ4/LZ4HC or stored).
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-decode"] }
+# Same PNG encoder the app already links through Tauri.
+png = "0.18"
+# Baseline JPEG for the map card pictures.
+jpeg-encoder = { version = "0.6", default-features = false, features = ["std"] }

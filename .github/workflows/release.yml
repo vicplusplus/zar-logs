@@ -1,0 +1,35 @@
+name: release
+
+# Pushing a tag like v0.1.0 builds the app on a clean machine and attaches the installer and the portable zip to a
+# draft GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      - run: cargo install tauri-cli --version "^2" --locked
+      # builds target/release/zar-logs.exe and the NSIS installer
+      - run: cargo tauri build
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1) zar-logs-setup.exe
+          New-Item -ItemType Directory -Force zar-logs | Out-Null
+          Copy-Item target/release/zar-logs.exe, uninstall.cmd, uninstall.ps1, README.md, LICENSE, THIRD-PARTY-NOTICES.md zar-logs/
+          Compress-Archive -Path zar-logs -DestinationPath zar-logs-portable.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            zar-logs-setup.exe
+            zar-logs-portable.zip
+          draft: true

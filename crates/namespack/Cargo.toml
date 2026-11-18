@@ -1,0 +1,14 @@
+[package]
+name = "zar-logs-namespack"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Generates the names pack (names.json) for zar-logs from locally dumped game data"
+
+[dependencies]
+# preserve_order is required, not cosmetic: the order of fields inside a dumped object and of objects inside a class
+# file decides the order of the pack's lists and of each skill row's effect sets (see src/lib.rs).
+serde_json = { version = "1", features = ["preserve_order"] }
+crc32fast = "1"
+zar-logs-core = { path = "../core" }

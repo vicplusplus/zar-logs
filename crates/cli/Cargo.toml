@@ -1,0 +1,15 @@
+[package]
+name = "zar-logs-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Diagnostics for the zar-logs core: probe the running game, show where the game was found"
+
+[[bin]]
+name = "zar-logs-cli"
+path = "src/main.rs"
+
+[dependencies]
+zar-logs-core = { path = "../core" }
+serde_json = "1"

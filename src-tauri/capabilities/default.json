@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The pages talk to the app over local HTTP. The only Tauri command allowed is dragging the overlay window by its panel.",
+  "windows": ["overlay"],
+  "remote": { "urls": ["http://127.0.0.1:*/*"] },
+  "permissions": ["core:window:allow-start-dragging"]
+}

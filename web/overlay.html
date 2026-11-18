@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>zar-logs overlay</title>
+<style>
+  /* The window is transparent; only the panel paints. Drag it anywhere by the panel. */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; cursor: default; }
+  body { font: 12px/1.35 system-ui, "Segoe UI", sans-serif; color: #f0efec; }
+  .ov { box-sizing: border-box; height: 100%; padding: 8px 10px; border-radius: 8px;
+    background: rgba(13, 15, 17, .78); border: 1px solid rgba(255, 255, 255, .12); }
+  /* children let the pointer through, so a press anywhere lands on the drag region */
+  .ov * { pointer-events: none; }
+  .head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+  .title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .time { font-variant-numeric: tabular-nums; color: #c3c2b7; flex: none; }
+  .diff { font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; padding: 0 5px; border-radius: 3px;
+    margin-left: 6px; color: #fff; background: #898781; vertical-align: 1px; }
+  .d-easy { background: #23803f; } .d-medium { background: #a86a00; } .d-hard { background: #c0392f; } .d-tough { background: #6b46c9; }
+  .row { position: relative; display: flex; justify-content: space-between; gap: 8px; padding: 2px 6px; margin-top: 3px;
+    border-radius: 4px; overflow: hidden; font-variant-numeric: tabular-nums; }
+  .row i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; opacity: .55; }
+  .row span, .row b { position: relative; white-space: nowrap; }
+  .row span { overflow: hidden; text-overflow: ellipsis; }
+  .row b { font-weight: 600; flex: none; }
+  .row small { color: #c3c2b7; font-weight: 400; margin-left: 6px; }
+  .foot { margin-top: 6px; color: #898781; font-size: 11px; display: flex; justify-content: space-between; }
+  .idle { color: #c3c2b7; }
+</style>
+</head>
+<body>
+<div class="ov" id="ov" data-tauri-drag-region><div class="idle">Starting…</div></div>
+<script>
+// one colour per player, by client id (the same order the viewer uses)
+const SERIES = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9", "#e66767"];
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const fmt = n => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : Math.round(n).toString();
+const clock = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+
+function render(l) {
+  const host = document.getElementById("ov");
+  const e = l.encounter;
+  if (!e || !e.players.length) {
+    const msg = l.status.state === "attached" ? (l.place ? "In " + l.place : "Waiting for a mission") : l.status.state === "error" ? "Capture error (see the viewer)" : "Waiting for the game";
+    host.replaceChildren(el("div", "idle", msg));
+    return;
+  }
+  const m = e.mission || {};
+  const title = el("div", "title", m.type || m.name || "Mission");
+  const diff = (m.difficulty || "").replace(/Tough/, "").replace(/[ ·]+$/, "").trim();
+  if (diff) title.append(el("span", "diff d-" + diff.toLowerCase(), diff));
+  if (m.tough || /Tough/.test(m.difficulty || "")) title.append(el("span", "diff d-tough", "Tough"));
+  const head = el("div", "head");
+  head.append(title, el("div", "time", clock(e.elapsed) + (e.ended ? " · ended" : "")));
+  const order = e.players.map(p => p.cid).sort((a, b) => a - b);
+  const top = Math.max(...e.players.map(p => p.damage), 1);
+  const rows = e.players.slice(0, 4).map(p => {
+    const row = el("div", "row");
+    const bar = el("i");
+    bar.style.width = (p.damage / top * 100).toFixed(1) + "%";
+    bar.style.background = SERIES[order.indexOf(p.cid) % SERIES.length];
+    const dps = el("b", null, fmt(p.dps));
+    dps.append(el("small", null, fmt(p.damage) + " · " + (p.share * 100).toFixed(0) + "%"));
+    row.append(bar, el("span", null, p.name), dps);
+    return row;
+  });
+  const foot = el("div", "foot");
+  foot.append(el("span", null, "Party " + fmt(e.party_dps) + " DPS"), el("span", null, fmt(e.party_damage)));
+  host.replaceChildren(head, ...rows, foot);
+}
+
+const es = new EventSource("/api/stream");
+es.onmessage = ev => { try { render(JSON.parse(ev.data)); } catch (err) { console.error(err); } };
+</script>
+</body>
+</html>

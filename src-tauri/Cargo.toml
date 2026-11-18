@@ -1,0 +1,29 @@
+[package]
+name = "zar-logs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Damage meter and build viewer for Zombie Assault: Resurgence (unofficial, read-only)"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tiny_http = "0.12"
+flate2 = "1"
+serde_json = "1"
+zar-logs-core = { path = "../crates/core" }
+zar-logs-buildview = { path = "../crates/buildview" }
+zar-logs-layoutgen = { path = "../crates/layoutgen" }
+zar-logs-namespack = { path = "../crates/namespack" }
+zar-logs-unity = { path = "../crates/unity" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[features]
+# set by the Tauri CLI for release bundles: serve the embedded page instead of a dev server
+custom-protocol = ["tauri/custom-protocol"]

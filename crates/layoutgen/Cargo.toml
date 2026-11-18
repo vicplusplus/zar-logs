@@ -1,0 +1,11 @@
+[package]
+name = "zar-logs-layoutgen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1"
+# byte-string search over the 66 MB DLL; already in the build as a dependency of serde_json
+memchr = "2"
