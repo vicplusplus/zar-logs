@@ -178,8 +178,8 @@ function aboutView() {
         + "documentation, this page included. The one exception is the disclosure at the top of the README, which the developer wrote."),
       p("The human developer (vicplusplus) chose what to build and the rules it must follow, played the game to test it, checked its numbers "
         + "against what the game shows, and reported what was wrong. They did not write the code and have not reviewed it in its entirety."),
-      p("You have a right to know this before you decide whether to run it. The developer's own statement on it is at the top of the ",
-        outsideLink("readme", "README"), " in ", repo(), ".")),
+      p("You have a right to know this before you decide whether to run it. The developer's own statement on it is the ",
+        outsideLink("readme", "AI Disclosure"), " section of the README in ", repo(), ".")),
     card("What it does to the game: nothing",
       list("It runs as its own program and only reads the game's memory from outside. It asks Windows for read access and nothing more.",
         "It does not inject code, hook functions, patch or write memory, send input, or change any game or save file.",

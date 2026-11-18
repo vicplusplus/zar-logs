@@ -25,7 +25,7 @@ const OVERLAY: &str = include_str!("../../web/overlay.html");
 /// browser, and for nothing else: the request carries a name from this list, never an address.
 pub const LINKS: &[(&str, &str)] = &[
     ("repo", env!("CARGO_PKG_REPOSITORY")),
-    ("readme", concat!(env!("CARGO_PKG_REPOSITORY"), "#readme")),
+    ("readme", concat!(env!("CARGO_PKG_REPOSITORY"), "/blob/main/README.md#ai-disclosure")),
     ("methods", concat!(env!("CARGO_PKG_REPOSITORY"), "/blob/main/METHODS.md")),
     ("issues", concat!(env!("CARGO_PKG_REPOSITORY"), "/issues")),
     ("releases", concat!(env!("CARGO_PKG_REPOSITORY"), "/releases")),

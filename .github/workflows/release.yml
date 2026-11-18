@@ -13,7 +13,7 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
@@ -27,7 +27,7 @@ jobs:
           New-Item -ItemType Directory -Force zar-logs | Out-Null
           Copy-Item target/release/zar-logs.exe, uninstall.cmd, uninstall.ps1, README.md, LICENSE, THIRD-PARTY-NOTICES.md zar-logs/
           Compress-Archive -Path zar-logs -DestinationPath zar-logs-portable.zip
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             zar-logs-setup.exe
