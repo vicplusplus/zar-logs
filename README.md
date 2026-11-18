@@ -42,6 +42,8 @@ each enemy resisted, and each player's build as the game's own cards show it.
 
 ## What it does
 
+![A four-player mission in zar-logs: party damage, DPS, mission time, kills, the party table and the damage-over-time chart](docs/screenshots/overview.jpg)
+
 - **Records every mission on its own.** Start it, play, and each mission you finish or leave shows up in the list.
   Solo or co-op. The hub (Aegis Station) is not a mission and is not recorded.
 - **Live overlay.** A small always-on-top panel with the party's DPS while you play. It never takes keyboard focus
@@ -61,6 +63,21 @@ each enemy resisted, and each player's build as the game's own cards show it.
 - **Mission details**: map, mode, difficulty, the Tough modifier, won / lost / left, kills.
 - **Keeps up with game updates**: after an update it re-reads what it needs from your installed game by itself.
 - **Everything stays on your computer.** No account, no upload, no internet connection.
+
+### A closer look
+
+| | |
+|---|---|
+| ![Damage per second over time for four players, with ability and effect lanes below](docs/screenshots/timeline.jpg) | ![Damage by source for one player: weapons, abilities, enemy explosions](docs/screenshots/sources.jpg) |
+| **Damage over time**, with every ability, buff and debuff on the same time axis. | **Where the damage came from**: each weapon, ability and other source, with hits, crits and overkill. |
+| ![The chart narrowed to a boss, with its health, shield, resistances and time to kill](docs/screenshots/boss.jpg) | ![Damage by target type with the share each enemy resisted](docs/screenshots/targets.jpg) |
+| **Bosses**: health, shield, resistances, immunities and time to kill, with the chart narrowed to the fight. | **Who took it**, how much each enemy resisted, and a check against the game's own damage counter. |
+| ![A player's build: armour pieces and resistances, weapons with their mods and numbers](docs/screenshots/build.jpg) | |
+| **Build viewer**: armour, weapons, mods and the numbers they add up to. | |
+
+These screenshots were taken with the game's pictures switched off, so that no game art is in this repository. In
+the app you also see the weapon icons, enemy portraits and map pictures, read from your own install. The player
+names are placeholders.
 
 ## Is it safe? Is it cheating?
 
@@ -84,7 +101,8 @@ What it never does:
 - No writing to the game's memory, its files, or your save.
 - No keyboard or mouse input sent to the game. No automation.
 - No network. It does not talk to the game's servers or to anyone else; it has no telemetry and no update check.
-  The only connection is from its own window to itself (`127.0.0.1`).
+  The only connection is from its own window to itself (`127.0.0.1`). The few links on its About page open in
+  your own browser, and only when you click them.
 - No account details. It never asks for a login and does not store account ids.
 
 You do not have to take this on trust: all of the code is in this repository, the part that touches the game is

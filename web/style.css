@@ -75,6 +75,8 @@ button { font: inherit; color: inherit; }
 .about p, .about li { font-size: 13px; line-height: 1.55; color: var(--text-primary); }
 .about p { margin: 0 0 8px; }
 .about ul { margin: 0 0 8px; padding-left: 18px; }
+.about a.ext { color: var(--text-primary); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.about a.ext:hover { color: var(--text-secondary); }
 .about .path { font-family: ui-monospace, Consolas, monospace; font-size: 12px; user-select: all; overflow-wrap: anywhere; }
 .empty { color: var(--text-secondary); padding: 12px 8px; font-size: 13px; }
 

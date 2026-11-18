@@ -68,7 +68,8 @@ impl App {
                 "prep": *self.prep.lock().unwrap(),
                 // for the About page
                 "app": { "version": env!("CARGO_PKG_VERSION"), "repository": env!("CARGO_PKG_REPOSITORY"),
-                         "data": self.data.display().to_string() } })
+                         "data": self.data.display().to_string(),
+                         "links": server::LINKS.iter().map(|(name, url)| (name.to_string(), json!(url))).collect::<serde_json::Map<_, _>>() } })
     }
 
     /// Logs, newest first; the mission in progress leads once it has damage.
@@ -355,14 +356,19 @@ cache: {}", game.display(), cache.display());
         .setup(move |tauri_app| {
             let _ = state.handle.set(tauri_app.handle().clone());
             let url = |path: &str| tauri::WebviewUrl::External(format!("http://127.0.0.1:{port}/{path}").parse().expect("local url"));
+            // The windows only ever show the app's own pages. A link to somewhere else is opened in the user's
+            // browser (server.rs `LINKS`), and the window itself refuses to go anywhere but its local server.
+            let local_only = |url: &tauri::Url| !matches!(url.scheme(), "http" | "https") || url.host_str() == Some("127.0.0.1");
             let main = tauri::WebviewWindowBuilder::new(tauri_app, "main", url(""))
                 .title("zar-logs")
                 .inner_size(1360.0, 900.0)
                 .min_inner_size(720.0, 480.0)
+                .on_navigation(local_only)
                 .build()?;
             // the in-game overlay: a small always-on-top panel that never takes focus from the game
             let mut ov = tauri::WebviewWindowBuilder::new(tauri_app, "overlay", url("overlay"))
                 .title("zar-logs overlay")
+                .on_navigation(local_only)
                 .inner_size(330.0, 176.0)
                 .decorations(false)
                 .transparent(true)

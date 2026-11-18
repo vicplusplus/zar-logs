@@ -5,6 +5,7 @@
 //!   /api/encounters         list of logs      /api/encounter/<id>   one log (GET, DELETE)
 //!   /api/live, /api/stream  capture status and the mission in progress (once, or as server-sent events)
 //!   /overlay                the in-game overlay's page        /api/overlay/toggle   show / hide it (POST)
+//!   /api/open/<name>        open one of the links of `LINKS` in the default browser (POST)
 
 use std::io::Write;
 use std::sync::Arc;
@@ -19,6 +20,33 @@ const APP_JS: &str = include_str!("../../web/app.js");
 const CHARTS_JS: &str = include_str!("../../web/charts.js");
 const STYLE: &str = include_str!("../../web/style.css");
 const OVERLAY: &str = include_str!("../../web/overlay.html");
+
+/// The outside links the pages show, by name. The page can ask for one of these to be opened in the default
+/// browser, and for nothing else: the request carries a name from this list, never an address.
+pub const LINKS: &[(&str, &str)] = &[
+    ("repo", env!("CARGO_PKG_REPOSITORY")),
+    ("readme", concat!(env!("CARGO_PKG_REPOSITORY"), "#readme")),
+    ("methods", concat!(env!("CARGO_PKG_REPOSITORY"), "/blob/main/METHODS.md")),
+    ("issues", concat!(env!("CARGO_PKG_REPOSITORY"), "/issues")),
+    ("releases", concat!(env!("CARGO_PKG_REPOSITORY"), "/releases")),
+    ("terms", "https://ninjakiwi.com/terms"),
+    ("gbfr-logs", "https://github.com/gbfr-logs/gbfr-logs"),
+    ("relink", "https://relink.cleista.cc/en"),
+];
+
+/// Hands an address to Windows to open with the default browser. Only ever called with an entry of `LINKS`.
+#[cfg(windows)]
+fn open_in_browser(url: &str) -> bool {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (verb, file) = (wide("open"), wide(url));
+    // SAFETY: both strings are NUL-terminated and outlive the call; the other arguments are null.
+    let result = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
+    result as usize > 32 // ShellExecute's own convention: values up to 32 are errors
+}
+#[cfg(not(windows))]
+fn open_in_browser(_url: &str) -> bool { false }
 
 fn header(k: &str, v: &str) -> Header { Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("static header") }
 
@@ -59,6 +87,12 @@ fn handle(app: &App, req: Request) {
         (Method::Get, "/static/charts.js") => text(200, "text/javascript; charset=utf-8", CHARTS_JS),
         (Method::Get, "/static/style.css") => text(200, "text/css; charset=utf-8", STYLE),
         (Method::Get, "/overlay") => text(200, "text/html; charset=utf-8", OVERLAY),
+        (Method::Post, p) if p.starts_with("/api/open/") => {
+            match LINKS.iter().find(|(name, _)| *name == &p["/api/open/".len()..]) {
+                Some((_, url)) => json(&serde_json::json!({ "ok": open_in_browser(url) })),
+                None => text(404, "text/plain", "no such link"),
+            }
+        }
         (Method::Post, "/api/overlay/toggle") => json(&serde_json::json!({ "overlay": app.set_overlay(!app.overlay_on()) })),
         (Method::Get, "/api/encounters") => json(&app.encounters()),
         (Method::Get, "/api/live") => json(&app.live()),

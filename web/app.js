@@ -141,6 +141,24 @@ function renderList() {
 // ---------- about ----------
 function openAbout() { ui.about = true; renderMain({ top: true }); }
 
+// A link to somewhere outside the app. The app's window never leaves its own pages, so the app is asked to open
+// the address in your default browser (by name: it only opens links from its own short list). In a normal
+// browser tab, or if that fails, the link opens the usual way.
+async function openOutside(name, url) {
+  try {
+    const r = await fetch("/api/open/" + name, { method: "POST" });
+    if (!r.ok || !(await r.json()).ok) throw new Error("not opened");
+  } catch (e) {
+    window.open(url, "_blank", "noopener");
+  }
+}
+function outsideLink(name, label) {
+  const url = ((ui.live && ui.live.app && ui.live.app.links) || {})[name];
+  if (!url) return h("span", { class: "path" }, label || name);
+  return h("a", { class: "ext", href: url, title: url, onclick: e => { e.preventDefault(); openOutside(name, url); },
+    onauxclick: e => e.preventDefault() }, label || url);
+}
+
 // What a user is entitled to know before deciding to use this: who and what wrote it, what it does to the game
 // (nothing), where its knowledge of the game comes from, and what it keeps. The repository has the long form.
 function aboutView() {
@@ -149,7 +167,7 @@ function aboutView() {
   const p = (...kids) => h("p", null, ...kids);
   const list = (...items) => h("ul", null, ...items.map(i => h("li", null, i)));
   const path = text => h("span", { class: "path" }, text);
-  const repo = () => app.repository ? path(app.repository) : "the project's repository";
+  const repo = () => outsideLink("repo", app.repository || "the project's repository");
   return [
     h("div", { class: "head" }, h("div", null, h("h1", null, "About zar-logs"),
       h("div", { class: "head-sub" }, "Version " + (app.version || "?") + " · unofficial fan tool, free and open source")),
@@ -160,8 +178,8 @@ function aboutView() {
         + "documentation, this page included. The one exception is the disclosure at the top of the README, which the developer wrote."),
       p("The human developer (vicplusplus) chose what to build and the rules it must follow, played the game to test it, checked its numbers "
         + "against what the game shows, and reported what was wrong. They did not write the code and have not reviewed it in its entirety."),
-      p("You have a right to know this before you decide whether to run it. The developer's own statement on it is at the top of the "
-        + "README in ", repo(), ".")),
+      p("You have a right to know this before you decide whether to run it. The developer's own statement on it is at the top of the ",
+        outsideLink("readme", "README"), " in ", repo(), ".")),
     card("What it does to the game: nothing",
       list("It runs as its own program and only reads the game's memory from outside. It asks Windows for read access and nothing more.",
         "It does not inject code, hook functions, patch or write memory, send input, or change any game or save file.",
@@ -171,13 +189,13 @@ function aboutView() {
         "Their terms prohibit, without their written consent, capturing data from their games, in the same list as hacking, cheating and "
         + "botting. That this tool only reads and gives no advantage does not make it allowed. The terms say such use can get your account "
         + "segregated or suspended, with no compensation for lost progress or purchases. Use of this tool is entirely at your own risk. "
-        + "Read them at ", path("https://ninjakiwi.com/terms"), ".")),
+        + "Read them at ", outsideLink("terms"), ".")),
     card("Where its knowledge of the game comes from",
       p("Nothing about the game is built into this program. On first start, and after each game update, it reads your own installed copy: "
         + "the game's type metadata and code (for the layout of its data in memory), and its asset bundles (for names, values, texts and pictures)."),
       p("Working out how to do that took static analysis of the game's files: parsing its metadata, disassembling parts of its code, and "
-        + "decoding its asset formats. Every method and tool, and what was done to the game during development, is listed in METHODS.md in ",
-        repo(), ".")),
+        + "decoding its asset formats. Every method and tool, and what was done to the game during development, is listed in ",
+        outsideLink("methods", "METHODS.md"), " in ", repo(), ".")),
     card("Ninja Kiwi's property",
       p("Zombie Assault: Resurgence and all of its assets, including the icons, pictures and texts shown here, are the property of Ninja Kiwi. "
         + "This project is not affiliated with or endorsed by Ninja Kiwi."),
@@ -186,12 +204,15 @@ function aboutView() {
       p("The idea for this tool came from gbfr-logs, the damage meter for Granblue Fantasy: Relink, and from Cleista's fork of it in "
         + "particular. Many design choices and quality-of-life features here were taken from that site."),
       p("If you play Granblue Fantasy: Relink, have a look at it: it is a pretty cool tool. ",
-        path("https://relink.cleista.cc/en"), " · ", path("https://github.com/gbfr-logs/gbfr-logs"))),
+        outsideLink("relink"), " · ", outsideLink("gbfr-logs"))),
     card("What it keeps on your machine",
       list("Recorded missions (logs). They hold the display names of the players in the mission, their loadouts and every hit. Account ids are not stored.",
         "A cache of what was read from the game, per game version.",
         "Nothing is uploaded. If you share a log for a bug report, the display names in it go with it."),
       app.data ? p("Data folder: ", path(app.data)) : null),
+    card("Problems and new versions",
+      p("Found something wrong, or a number that does not match the game? Report it at ", outsideLink("issues"), "."),
+      p("zar-logs does not check for updates. New versions are published at ", outsideLink("releases"), ".")),
   ];
 }
 
