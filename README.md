@@ -4,8 +4,9 @@ A damage meter and build viewer for Zombie Assault: Resurgence, as a small deskt
 It records every mission you play: damage by player, by source and over time, healing, status effect uptime, what
 each enemy resisted, and each player's build as the game's own cards show it.
 
-> **AI disclosure**
-> 
+
+## AI Disclosure
+
 > **This application and its development process were entirely AI-programmed.**
 > 
 > If you are against AI-driven development, this software uses it plentifully. Take that as you will.
