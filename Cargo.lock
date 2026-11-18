@@ -4565,7 +4565,7 @@ dependencies = [
 
 [[package]]
 name = "zar-logs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "serde_json",
@@ -4582,7 +4582,7 @@ dependencies = [
 
 [[package]]
 name = "zar-logs-buildview"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crc32fast",
  "serde_json",
@@ -4595,7 +4595,7 @@ dependencies = [
 
 [[package]]
 name = "zar-logs-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
  "zar-logs-core",
@@ -4603,7 +4603,7 @@ dependencies = [
 
 [[package]]
 name = "zar-logs-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "indexmap 2.14.2",
@@ -4614,14 +4614,14 @@ dependencies = [
 
 [[package]]
 name = "zar-logs-gearcalc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "zar-logs-layoutgen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "memchr",
  "serde_json",
@@ -4629,7 +4629,7 @@ dependencies = [
 
 [[package]]
 name = "zar-logs-namespack"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crc32fast",
  "serde_json",
@@ -4638,7 +4638,7 @@ dependencies = [
 
 [[package]]
 name = "zar-logs-unity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jpeg-encoder",
  "lz4_flex",
