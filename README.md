@@ -35,7 +35,8 @@ each enemy resisted, and each player's build as the game's own cards show it.
 
 
 > **Unofficial.** A free fan tool. Zombie Assault: Resurgence and all of its assets are the property of Ninja Kiwi.
-> This project is not affiliated with or endorsed by Ninja Kiwi, and Ninja Kiwi has not approved it. No game asset
+> This project is not affiliated with or endorsed by Ninja Kiwi, and Ninja Kiwi has not approved it. Using it is
+> against Ninja Kiwi's Terms of Service and is entirely at your own risk (see "Is it safe?" below). No game asset
 > is included in this repository or in a build: the pictures and texts the app shows are read from your own
 > installed copy of the game.
 
@@ -66,6 +67,9 @@ each enemy resisted, and each player's build as the game's own cards show it.
 **It only watches.** zar-logs reads what the game has already computed and shows it to you. It does not change
 anything and cannot give you an advantage in play.
 
+**It is still not permitted.** Ninja Kiwi's terms prohibit capturing data from their games without their written
+consent, and using this tool can cost you your account. The details are under "Things you should know" below.
+
 What it does:
 
 - Runs as its own, separate program.
@@ -89,9 +93,13 @@ used to make it, and the ones that were not.
 
 Things you should know before deciding:
 
-- **Ninja Kiwi has not approved this tool.** It is third-party software that reads an online game's memory.
-  Nobody has asked Ninja Kiwi whether that is acceptable under their terms, so this project cannot promise that
-  it is. Use it at your own risk.
+- **Using this tool is against Ninja Kiwi's Terms of Service.** Their [terms](https://ninjakiwi.com/terms) (last
+  updated March 4, 2025) expressly prohibit, without Ninja Kiwi's written consent, any attempt to "datasniff, data
+  capture" or scrape their games, in the same list as hacking, cheating and botting. zar-logs captures data from
+  the running game and has no such consent. That it only reads, changes nothing and gives no advantage does not
+  make it allowed. The terms say such use ends your licence to play and leads to your account being segregated or
+  suspended, and that progress and purchases lost that way are not compensated. **Use of this tool is entirely at
+  your own risk.** Read the terms yourself before you decide.
 - **Logs contain names.** A recorded mission holds the display names and builds of everyone who was in it. They
   stay on your computer unless you share them.
 - **Antivirus and Windows warnings.** The program is not signed, so Windows may warn the first time you run it,

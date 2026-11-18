@@ -5,7 +5,9 @@ make zar-logs: what was decompiled, what was extracted, which tools were used, w
 and what was deliberately not done. It was compiled from the development session records by the AI that did the
 work, at the developer's request. The developer's own statement on AI use and on who did what is at the top of the [README](README.md).
 
-Nobody at Ninja Kiwi was contacted, and no permission was asked or given.
+Nobody at Ninja Kiwi was contacted, and no permission was asked or given. Ninja Kiwi's
+[Terms of Service](https://ninjakiwi.com/terms) prohibit capturing data from their games, and hacking them, without
+their written consent; what is described below was done without that consent, and so is using the tool.
 
 ## 1. What the program does when you run it
 

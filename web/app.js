@@ -167,7 +167,11 @@ function aboutView() {
         "It does not inject code, hook functions, patch or write memory, send input, or change any game or save file.",
         "It does not talk to the game's servers or to anything else on the network. The pages you see are served to this window from your own machine (127.0.0.1).",
         "It gives no advantage in play: it shows what happened (damage, healing, builds), after the game has computed it."),
-      p("Ninja Kiwi has not approved this tool. Whether using it fits their terms is not something this project can promise; use it at your own risk.")),
+      p(h("b", null, "Using this tool is against Ninja Kiwi's Terms of Service. "),
+        "Their terms prohibit, without their written consent, capturing data from their games, in the same list as hacking, cheating and "
+        + "botting. That this tool only reads and gives no advantage does not make it allowed. The terms say such use can get your account "
+        + "segregated or suspended, with no compensation for lost progress or purchases. Use of this tool is entirely at your own risk. "
+        + "Read them at ", path("https://ninjakiwi.com/terms"), ".")),
     card("Where its knowledge of the game comes from",
       p("Nothing about the game is built into this program. On first start, and after each game update, it reads your own installed copy: "
         + "the game's type metadata and code (for the layout of its data in memory), and its asset bundles (for names, values, texts and pictures)."),
