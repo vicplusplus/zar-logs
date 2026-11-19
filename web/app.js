@@ -31,6 +31,8 @@ const ui = {
   allEffects: false,    // also draw the internal / unnamed status effects under the chart
   srcColors: {},        // encounter id -> player cid -> source key -> slot (color follows the source, not its rank)
   lastFetch: 0,
+  notice: "",           // what the last export / import did, shown above the page for a while
+  noticeTimer: 0,
 };
 
 // ---------- data ----------
@@ -38,6 +40,15 @@ async function getJSON(url, opts) {
   const r = await fetch(url, opts);
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
   return r.json();
+}
+// A request that changes or does something. The header marks it as coming from the app's own page: the server
+// refuses such requests without it, and a page of another site cannot send it here.
+function act(url, method) { return getJSON(url, { method: method || "POST", headers: { "X-Zar-Logs": "1" } }); }
+function notify(text) {
+  ui.notice = text;
+  clearTimeout(ui.noticeTimer);
+  ui.noticeTimer = setTimeout(() => { ui.notice = ""; renderMain(); }, 12000);
+  renderMain();
 }
 async function refreshList() {
   ui.list = await getJSON("/api/encounters");
@@ -86,7 +97,7 @@ function onLive(l) {
     ov.hidden = false;
     ov.textContent = l.overlay ? "Overlay: on" : "Overlay: off";
     ov.setAttribute("aria-pressed", String(!!l.overlay));
-    ov.onclick = () => fetch("/api/overlay/toggle", { method: "POST" });
+    ov.onclick = () => act("/api/overlay/toggle").catch(() => {});
   }
   if (l.version !== ui.version) { ui.version = l.version; refreshList().then(() => refreshDetail(true)); return; }
   const id = currentId();
@@ -130,6 +141,7 @@ function renderList() {
     return h("button", { class: "enc" + (r.id === id ? " sel" : "") + (m.art ? " art" : ""), style: artStyle(m),
       onclick: () => { ui.sel = r.id; ui.about = false; ui.player = null; ui.target = null; renderList(); refreshDetail(true); renderMain({ top: true }); } },
       h("div", { class: "enc-title" }, !r.closed ? h("span", { class: "pill live" }, "Live") : null,
+        r.imported ? h("span", { class: "pill", title: "Imported from a file someone shared" }, "Imported") : null,
         h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, m.type || missionName(m)), diffTags(m)),
       h("div", { class: "enc-sub" }, h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, missionPlace(r.mission)), h("span", null, times(r))),
       h("div", { class: "enc-sub dim" },
@@ -146,8 +158,7 @@ function openAbout() { ui.about = true; renderMain({ top: true }); }
 // browser tab, or if that fails, the link opens the usual way.
 async function openOutside(name, url) {
   try {
-    const r = await fetch("/api/open/" + name, { method: "POST" });
-    if (!r.ok || !(await r.json()).ok) throw new Error("not opened");
+    if (!(await act("/api/open/" + name)).ok) throw new Error("not opened");
   } catch (e) {
     window.open(url, "_blank", "noopener");
   }
@@ -208,7 +219,8 @@ function aboutView() {
     card("What it keeps on your machine",
       list("Recorded missions (logs). They hold the display names of the players in the mission, their loadouts and every hit. Account ids are not stored.",
         "A cache of what was read from the game, per game version.",
-        "Nothing is uploaded. If you share a log for a bug report, the display names in it go with it."),
+        "Nothing is uploaded. A log leaves your machine only when you export it and send the file to someone; the display names in it go with it.",
+        "A log you import is someone else's file. It is checked before it is added, and builds in it are drawn from your own copy of the game, not from the file."),
       app.data ? p("Data folder: ", path(app.data)) : null),
     card("Problems and new versions",
       p("Found something wrong, or a number that does not match the game? Report it at ", outsideLink("issues"), "."),
@@ -262,7 +274,7 @@ function renderMainInner(main) {
     return;
   }
   if (!d) {
-    main.replaceChildren(h("div", { class: "head" }, h("div", null, h("h1", null, "zar-logs"),
+    main.replaceChildren(ui.notice ? h("div", { class: "notice", role: "status" }, ui.notice) : "", h("div", { class: "head" }, h("div", null, h("h1", null, "zar-logs"),
       h("div", { class: "head-sub" }, "Waiting for a mission. Encounters are recorded automatically while the meter is running."))),
       h("div", { class: "note" }, "This program was entirely programmed by an AI system and is an unofficial, read-only fan tool. ",
         h("button", { class: "btn small", onclick: openAbout }, "About, AI use and methods")));
@@ -280,20 +292,26 @@ function renderMainInner(main) {
       h("div", { class: "head-sub" }, subBits.join(" · "))),
     h("div", { class: "head-actions" },
       !d.closed ? h("span", { class: "pill live" }, "Live") : null,
+      d.imported ? h("span", { class: "pill", title: "Imported from a file someone shared" }, "Imported") : null,
+      d.closed ? h("button", { class: "btn", title: "Save a copy of this log to send to someone", onclick: () => exportEncounter(d.id) }, "Export…") : null,
+      d.closed ? h("button", { class: "btn", title: "Show this log's file in Explorer", onclick: () => act(`/api/encounter/${encodeURIComponent(d.id)}/reveal`).catch(() => {}) }, "Show file") : null,
       d.closed ? h("button", { class: "btn danger", onclick: () => removeEncounter(d.id) }, "Delete") : null));
 
+  // what the figures count: damage to enemies, or to structures as well (crates, pods, barrels, level geometry)
+  const counted = d.structures === "on" ? "enemies and structures" : d.structures === "always" ? "structures included" : "enemies only";
   const tiles = h("div", { class: "tiles" },
-    tile("Party damage", fmt(d.party_damage), fmtFull(d.party_damage)),
+    tile("Party damage", fmt(d.party_damage), `${fmtFull(d.party_damage)} · ${counted}`),
     tile("Party DPS", fmt(d.party_dps), "damage ÷ mission time"),
     tile("Mission time", timer(d.duration), [
       !d.closed && !d.game_time && d.result == null ? "running" :
         d.outcome === "won" ? "mission complete" : d.outcome === "lost" ? "mission failed" :
         d.result === "finished" ? "mission ended" : "left before the end",
       d.game_time ? `game timer ${timer(d.game_time)} with cutscenes` : null].filter(Boolean).join(" · ")),
-    tile("Kills", fmtFull(d.players.reduce((a, p) => a + (p.kills_native || p.kills), 0)), "enemies killed by players"));
+    tile("Kills", fmtFull(d.players.reduce((a, p) => a + (p.kills_native || p.kills), 0)), "enemies killed by players"),
+    d.xp ? tile("XP gained", fmtFull(d.xp), (d.players.find(p => p.local) || {}).name ? "by " + d.players.find(p => p.local).name + ", from the result screen" : "from the result screen") : null);
 
   if (ui.target != null && !(d.bosses || []).some(b => b.id === ui.target)) ui.target = null;
-  main.replaceChildren(head, tiles, partyCard(d), timeCard(d), playerCard(d), captureNote(d),
+  main.replaceChildren(ui.notice ? h("div", { class: "notice", role: "status" }, ui.notice) : "", head, tiles, partyCard(d), timeCard(d), playerCard(d), captureNote(d),
     h("div", { class: "note legal" }, "Unofficial fan tool, free to use. Zombie Assault: Resurgence and all of its assets, including the icons shown here, are the property of Ninja Kiwi. "
       + "This tool is not affiliated with or endorsed by Ninja Kiwi. Icons are read from your own installed copy of the game and are not distributed with the tool."));
   drawCharts(d);
@@ -314,9 +332,16 @@ function partyCard(d) {
       h("td", null, pct(p.hits ? p.crits / p.hits : 0)), h("td", null, fmt(p.max)), h("td", null, fmtFull(p.kills_native || p.kills)),
       h("td", null, fmt(p.taken)), h("td", null, fmt(p.healed)), h("td", null, String(p.downs)));
   });
+  // Damage to structures is in every log next to the damage to enemies; this picks which of the two is shown,
+  // here and everywhere else (the list, the overlay). A log from before they were kept apart has only the sum.
+  const old = d.structures === "always";
+  const pickStructures = old ? null : seg([[false, "Enemies only"], [true, "With structures"]], d.structures === "on", setStructures);
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("div", null, h("div", { class: "card-title" }, "Party"),
-      h("div", { class: "card-sub" }, "Select a player to see their breakdown below"))),
+      h("div", { class: "card-sub" }, "Select a player to see their breakdown below"
+        + (old ? " · recorded by an older version: damage to structures (crates, pods, barrels) and blasts of enemies are in these figures"
+          : d.structures === "on" ? " · damage to structures (crates, pods, barrels) is counted" : " · damage to structures (crates, pods, barrels) is left out"))),
+      h("div", { class: "controls" }, pickStructures)),
     h("div", { class: "scroll-x" }, h("table", null,
       h("thead", null, h("tr", null, ["Player", "Damage", "DPS", "Share", "Crit rate", "Max hit", "Kills", "Taken", "Healed", "Downs"].map(t => h("th", null, t)))),
       h("tbody", null, rows))));
@@ -465,7 +490,8 @@ function playerCard(d) {
     body);
 }
 
-// what a damage source is. "enemy" = an enemy that explodes when it dies (Detonators): the blast is credited to whoever killed it
+// what a damage source is. "enemy" only occurs in logs of older versions, which counted the blast of an enemy that
+// explodes when it dies (Detonators) for the player who killed it
 function kindLabel(k) {
   return { weapon: "Weapon", ability: "Ability", effect: "Ability effect", enemy: "Enemy explosion", turret: "Turret", barrel: "Environment",
     area: "Area effect", entity: "Entity", behaviour: "Effect", shield: "Shield", environment: "Environment" }[k] || k || "";
@@ -593,7 +619,8 @@ function glyph(name) {
 }
 // an in-game icon read from the local install; when it is missing the fallback node is shown instead
 function icon(url, cls, fallback) {
-  if (!url) return fallback || null;
+  // pictures only ever come from this app's own picture cache, whatever a log says
+  if (!url || !url.startsWith("/icons/")) return fallback || null;
   const img = h("img", { src: url, class: cls || "", alt: "", loading: "lazy", draggable: "false" });
   img.addEventListener("error", () => { if (fallback) img.replaceWith(fallback); else img.remove(); });
   return img;
@@ -666,7 +693,7 @@ function stateLine(text, on) {
 function buildTab(d, p) {
   const b = p.build;
   if (!b) return h("div", { class: "empty" }, "No build captured for this player.");
-  if (b.version !== 5) return h("div", { class: "empty" }, b.note || "This log was recorded by an older version of the meter; its build cannot be shown in this layout.");
+  if (b.version !== 6) return h("div", { class: "empty" }, b.note || "This log was recorded by an older version of the meter; its build cannot be shown in this layout.");
   const c = b.character, a = b.armour;
   const out = [h("div", { class: "bhead" }, h("span", { class: "name" }, c.name), h("span", { class: "sub" }, [c.cls, c.sub].filter(Boolean).join(" · ")),
     h("span", { class: "tag" }, `Level ${c.level}`))];
@@ -733,15 +760,16 @@ function captureNote(d) {
   const bits = [`${fmtFull(d.stats.server_hits)} hits logged`];
   if (d.first_hit != null) bits.push(`first hit at ${timer(Math.max(0, d.first_hit))}, last at ${timer(d.last_hit)}`);
   if (me && me.native_total != null && me.native_total > 0) {
-    // The game's own counter covers weapon damage and abilities that hit directly; it leaves out abilities that work
-    // through something they place (Haven, Biocleanse Bomb) and blasts from enemies or barrels you set off.
-    // So compare it with whichever of our two sums it is closer to.
-    const direct = me.direct_damage != null ? me.direct_damage : me.damage;
-    const weapon = me.weapon_damage != null ? me.weapon_damage : direct;
+    // The game's own counter covers weapon damage and abilities that hit directly, structures included; it leaves out
+    // abilities that work through something they place (Haven, Biocleanse Bomb, turrets) and blasts of barrels you
+    // set off. So compare it with whichever of our two sums it is closer to.
+    const direct = me.counter_direct != null ? me.counter_direct : me.direct_damage != null ? me.direct_damage : me.damage;
+    const weapon = me.counter_weapon != null ? me.counter_weapon : me.weapon_damage != null ? me.weapon_damage : direct;
     const useWeapon = Math.abs(weapon - me.native_total) < Math.abs(direct - me.native_total);
     const mine = useWeapon ? weapon : direct;
-    bits.push(`your ${useWeapon ? "weapon" : "weapon and ability"} damage ${fmtFull(mine)} vs the game's own counter ${fmtFull(me.native_total)} (${pct(mine / me.native_total)})`);
+    bits.push(`your ${useWeapon ? "weapon" : "weapon and ability"} damage with structures ${fmtFull(mine)} vs the game's own counter ${fmtFull(me.native_total)} (${pct(mine / me.native_total)})`);
   }
+  if (d.stats.enemy_hits) bits.push(`${fmtFull(d.stats.enemy_hits)} hits by enemies (blasts, attacks on turrets) the game credits to players are not counted`);
   if (d.stats.late) bits.push(`${d.stats.late} hits read late`);
   return h("div", { class: "note" }, "Capture: " + bits.join(" · "));
 }
@@ -809,9 +837,39 @@ function drawCharts(d) {
 
 async function removeEncounter(id) {
   if (!confirm("Delete this encounter log? This cannot be undone.")) return;
-  await getJSON(`/api/encounter/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await act(`/api/encounter/${encodeURIComponent(id)}`, "DELETE");
   ui.sel = null; ui.detail = null;
   await refreshList(); await refreshDetail(true);
+}
+
+// ---------- sharing logs ----------
+// The app asks where to save (or which files to open) with a Windows dialog of its own; the page never sees a path
+// it did not get back from there.
+async function exportEncounter(id) {
+  try {
+    const r = await act(`/api/encounter/${encodeURIComponent(id)}/export`);
+    if (r.ok) notify("Exported to " + r.path);
+    else if (!r.cancelled) notify("Could not export: " + (r.error || "unknown error"));
+  } catch (e) { notify("Could not export: " + e.message); }
+}
+async function importEncounters() {
+  try {
+    const r = await act("/api/import");
+    if (r.cancelled) return;
+    const n = (r.added || []).length, bits = [];
+    bits.push(n ? `Imported ${n} log${n === 1 ? "" : "s"}.` : "Nothing was imported.");
+    if (r.present) bits.push(`${r.present} ${r.present === 1 ? "was" : "were"} already here.`);
+    for (const x of r.rejected || []) bits.push(`${x.file}: ${x.why}.`);
+    await refreshList();
+    if (n) { ui.sel = r.added[0]; ui.about = false; ui.player = null; ui.target = null; renderList(); await refreshDetail(true); }
+    notify(bits.join(" "));
+  } catch (e) { notify("Could not import: " + e.message); }
+}
+async function setStructures(on) {
+  try {
+    await act("/api/structures/" + (on ? "on" : "off"));
+    await refreshList(); await refreshDetail(true);
+  } catch (e) { notify("Could not change the setting: " + e.message); }
 }
 
 // a refresh that arrived while something was being read is applied once the pointer has moved on
@@ -828,3 +886,4 @@ addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setT
 })();
 
 document.getElementById("about-open").addEventListener("click", openAbout);
+document.getElementById("import-open").addEventListener("click", importEncounters);

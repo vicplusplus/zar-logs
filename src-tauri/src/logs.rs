@@ -1,8 +1,7 @@
-//! Encounter logs on disk: `enc-<id>.json.gz` (summary, full detail, raw hit rows) and `index.json` (list rows).
-//! Same files the Python meter writes, so both can share one folder while the port is in progress.
+//! The app's view of the logs folder (`zar_logs_core::store` has the files' format and names): listing, reading,
+//! deleting, exporting and importing logs, and the things a log is shown with that belong to this machine (pictures).
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -17,16 +16,6 @@ pub struct Store {
     game: std::sync::RwLock<PathBuf>,
     icons: Mutex<(Option<SystemTime>, HashMap<String, String>)>,
     write: Mutex<()>,
-}
-
-fn safe_id(id: &str) -> bool {
-    !id.is_empty() && !id.contains('/') && !id.contains('\\') && !id.contains("..")
-}
-
-fn read_gz(path: &Path) -> Option<Value> {
-    let mut text = String::new();
-    flate2::read::GzDecoder::new(std::fs::File::open(path).ok()?).read_to_string(&mut text).ok()?;
-    serde_json::from_str(&text).ok()
 }
 
 impl Store {
@@ -68,25 +57,46 @@ impl Store {
         Value::Array(rows)
     }
 
+    /// The file of a log, by its id (an id is letters, digits and '-': it cannot name anything outside the folder).
+    pub fn path_of(&self, id: &str) -> Option<PathBuf> { zar_logs_core::store::find_log(&self.logs, id) }
+
     pub fn detail(&self, id: &str) -> Option<Value> {
-        if !safe_id(id) {
-            return None;
-        }
-        let mut d = read_gz(&self.logs.join(format!("enc-{id}.json.gz")))?.get_mut("detail")?.take();
+        let mut d = zar_logs_core::store::read_log(&self.path_of(id)?)?.get_mut("detail")?.take();
         self.decorate(&mut d);
         Some(d)
     }
 
     /// Removes one log (the page's Delete button). The user's own files in the logs folder; nothing of the game's.
     pub fn delete(&self, id: &str) -> bool {
-        if !safe_id(id) {
-            return false;
-        }
         let _guard = self.write.lock().unwrap();
-        let path = zar_logs_core::store::log_path(&self.logs, id);
-        let gone = std::fs::remove_file(&path).is_ok() || !path.exists();
+        let gone = match self.path_of(id) {
+            Some(path) => std::fs::remove_file(&path).is_ok() || !path.exists(),
+            None => zar_logs_core::store::valid_id(id),
+        };
         zar_logs_core::store::sync_index(&self.logs); // drops the row of the log that is gone
         gone
+    }
+
+    /// Copies one log to a place the user chose.
+    pub fn export(&self, id: &str, to: &Path) -> Result<(), String> {
+        let from = self.path_of(id).ok_or("no such log")?;
+        std::fs::copy(&from, to).map(|_| ()).map_err(|e| format!("{}: {e}", to.display()))
+    }
+
+    /// Adds logs from files the user chose (see `zar_logs_core::store::import`): what became of each.
+    pub fn import(&self, files: &[PathBuf]) -> Value {
+        use zar_logs_core::store::Imported;
+        let _guard = self.write.lock().unwrap();
+        let (mut added, mut present, mut rejected) = (Vec::new(), 0, Vec::new());
+        for file in files {
+            let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match zar_logs_core::store::import(&self.logs, file) {
+                Imported::Added(id) => added.push(id),
+                Imported::Present(_) => present += 1,
+                Imported::Rejected(why) => rejected.push(json!({ "file": name, "why": why })),
+            }
+        }
+        json!({ "added": added, "present": present, "rejected": rejected })
     }
 
     // ---- pictures extracted from the local install: cache/icons/index.json maps a key to a file name ----

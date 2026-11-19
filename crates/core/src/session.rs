@@ -11,8 +11,14 @@
 //! The game's own timer (result screen) also counts the intro and outro cutscenes. It is kept as a secondary figure,
 //! `game_time`, read from the game's result data when the level is left.
 //!
-//! This is a port of the Python model, row for row: a log written here equals the one the reference writes from the
-//! same records.
+//! Whose damage is counted:
+//!
+//! * Damage a player's weapons, abilities and deployables did, and blasts of barrels they set off.
+//! * Not damage an enemy did. The game attributes a Detonator's blast, or a Multiplier clawing a turret, to a player
+//!   (that is how it credits kills), but the player did not deal it.
+//! * Damage to structures (anything that is not an enemy: crates, pods, barrels, level geometry) is counted apart.
+//!   Every figure exists twice, without and with it; the first is the one shown unless the user asks for the other
+//!   (`view`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -22,7 +28,7 @@ use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 use crate::consts::{self, Consts};
-use crate::names::{Owner, OwnerCtx, Resolver};
+use crate::names::{Attacker, Owner, OwnerCtx, Resolver};
 use crate::records::*;
 
 /// Seconds per column of the time series (ours, not the game's).
@@ -30,7 +36,15 @@ const BUCKET: f64 = 1.0;
 /// How many damage types an aggregate keeps apart. The game has six today; a seventh would be counted in the
 /// totals and left out of the per-type split until this grows.
 const TYPE_SLOTS: usize = 8;
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 8;
+/// A hit whose source definition is not known yet waits this long (world seconds) for the definition tables of the
+/// mission to be read again, so that it can be told whether an enemy did it.
+const UNKNOWN_HOLD: f64 = 2.0;
+/// The game writes its result data (time, outcome, experience) in one go; it is read again this long (seconds) after
+/// the time first showed, so that the fields written last are in.
+const RESULT_SETTLE: f64 = 0.3;
+/// A bare effect that starts this close (seconds) to the end of an ability's effect follows from it.
+const FOLLOW_GAP: f64 = 0.12;
 
 /// Python's `round(x, nd)`: correctly rounded on the exact binary value.
 fn rnd(x: f64, nd: usize) -> f64 {
@@ -202,6 +216,8 @@ struct FxMeta {
     types: BTreeSet<u8>,
     owner: u32,
     by: String,
+    /// entity the game names as the giver of the effect (0 = none)
+    giver: u32,
 }
 
 /// Status effects on one entity (a player or a boss) over time.
@@ -222,11 +238,18 @@ pub struct Player {
     pub lvl: u8,
     pub local: bool,
     host: bool,
+    /// everything the player dealt, damage to structures included
     pub total: Agg,
     /// attack key -> aggregate, and its damage over time
     sources: IndexMap<String, (Agg, Series)>,
     targets: IndexMap<String, Agg>,
     series: Series,
+    /// the same three without damage to structures: the figures shown by default
+    pub core: Agg,
+    core_sources: IndexMap<String, (Agg, Series)>,
+    core_series: Series,
+    /// entity ids this player has had
+    ents: HashSet<u32>,
     pub taken: f64,
     taken_hits: u64,
     taken_by: IndexMap<String, (f64, u64)>,
@@ -250,7 +273,8 @@ pub struct Player {
 impl Player {
     fn new(cid: u32) -> Player {
         Player { cid, name: format!("Player {cid}"), cls: String::new(), sub: String::new(), lvl: 0, local: false, host: false,
-            total: Agg::default(), sources: IndexMap::new(), targets: IndexMap::new(), series: Series::default(), taken: 0.0,
+            total: Agg::default(), sources: IndexMap::new(), targets: IndexMap::new(), series: Series::default(),
+            core: Agg::default(), core_sources: IndexMap::new(), core_series: Series::default(), ents: HashSet::new(), taken: 0.0,
             taken_hits: 0, taken_by: IndexMap::new(), taken_series: Series::default(), healed: 0.0, kills_native: 0, downs: 0,
             accuracy: None, native_total: None, abil: BTreeMap::new(), abil_hash: BTreeMap::new(), fx: Fx::default(),
             hp_series: HashMap::new(), hp_max: 0.0, build: None, weapon_slot: HashMap::new() }
@@ -304,11 +328,14 @@ pub struct Encounter {
     pub mission: Value,
     pub result: Option<&'static str>,
     party_series: Series,
+    core_party_series: Series,
     targets: IndexMap<String, Agg>,
     pub hits: Vec<HitRow>,
     pub server_hits: u64,
     predicted_hits: u64,
     other_hits: u64,
+    /// hits an enemy did that the game attributes to a player: not counted as that player's damage
+    enemy_hits: u64,
     late: u64,
     pub dirty: bool,
     pub closed: bool,
@@ -333,8 +360,13 @@ pub struct Encounter {
     /// the game's own mission time (with cutscenes)
     pub game_time: Option<f64>,
     pub outcome: Option<&'static str>,
+    /// experience the local player gained, from the game's result data
+    pub xp: Option<u64>,
     /// result data as it was when this encounter started (left over from the last one)
     res0: Option<GameResult>,
+    /// wall time at which the game's result for this mission first showed, and whether it has been read in full
+    result_at: Option<f64>,
+    result_settled: bool,
 }
 
 /// One ability of a player as the timeline shows it.
@@ -408,7 +440,7 @@ fn group_lanes(abilities: &[AbLane], effects: Vec<Map<String, Value>>, dur: f64,
     }
     // An effect without a set carries no owner in the data. When every one of its spans (two or more) starts right
     // where a span of one ability, or of one of that ability's effects, starts or ends, it is that ability's
-    // follow-up: e.g. the movement speed Relay Race grants as the dash ends.
+    // follow-up.
     let mut i = 0;
     while i < rest.len() {
         let (e, own) = &rest[i];
@@ -421,9 +453,15 @@ fn group_lanes(abilities: &[AbLane], effects: Vec<Map<String, Value>>, dur: f64,
                 for (other, _) in &lists[li] {
                     edges.extend(intervals_of(other.get("intervals").unwrap_or(&Value::Null)).into_iter().flatten());
                 }
-                if spans.len() >= 2 && spans.iter().all(|s| edges.iter().any(|x| (s[0] - x).abs() <= 0.35)) {
+                // ... or, used once or often, every span starts just as a span of one named effect of the ability
+                // ends: what that effect leaves behind (the speed of Relay Race, once its dash is over)
+                let follows = lists[li].iter().filter_map(|(other, perk)| Some((other, perk.as_ref()?))).find(|(other, _)| {
+                    let ends: Vec<f64> = intervals_of(other.get("intervals").unwrap_or(&Value::Null)).iter().map(|iv| iv[1]).collect();
+                    !spans.is_empty() && spans.iter().all(|s| ends.iter().any(|x| (s[0] - x).abs() <= FOLLOW_GAP))
+                }).map(|(_, perk)| perk.clone());
+                if follows.is_some() || (spans.len() >= 2 && spans.iter().all(|s| edges.iter().any(|x| (s[0] - x).abs() <= 0.35))) {
                     let (e, _) = rest.remove(i);
-                    let perk = name_of(&e);
+                    let perk = match follows { Some(perk) => format!("{perk}: {}", name_of(&e).to_lowercase()), None => name_of(&e) };
                     lists[li].push((e, Some(perk)));
                     moved = true;
                     break;
@@ -564,11 +602,12 @@ impl Encounter {
         Encounter {
             c, match_id, id: local_stamp(wall), start_wall: wall, end_wall: None, t0: None, t_last: 0.0, first_hit: None,
             last_hit: None, players: IndexMap::new(), friendly: HashSet::new(), ent_client: HashMap::new(), local_cid: None,
-            mission: json!({}), result: None, party_series: Series::default(), targets: IndexMap::new(), hits: Vec::new(),
-            server_hits: 0, predicted_hits: 0, other_hits: 0, late: 0, dirty: true, closed: false, pending_builds: None,
+            mission: json!({}), result: None, party_series: Series::default(), core_party_series: Series::default(),
+            targets: IndexMap::new(), hits: Vec::new(), server_hits: 0, predicted_hits: 0, other_hits: 0, enemy_hits: 0, late: 0, dirty: true, closed: false, pending_builds: None,
             pending_hits: Vec::new(), flushing: false, pending_heals: Vec::new(), bosses: IndexMap::new(), bossmods: Vec::new(),
             prop_tag: HashMap::new(), tags: Vec::new(), enemymods: Vec::new(), defense: None, seen_res: HashMap::new(),
-            ended: false, world_first: None, world_last: 0.0, game_time: None, outcome: None, res0: None,
+            ended: false, world_first: None, world_last: 0.0, game_time: None, outcome: None, xp: None, res0: None,
+            result_at: None, result_settled: false,
         }
     }
 
@@ -604,18 +643,31 @@ impl Encounter {
     /// at the end of this world's clock. (Seen live: the game writes it when the world state turns
     /// GoToPostGameScreen, while the client is still in GameEnded; `valid` is cleared again once the result screen
     /// has consumed it, so it is not a usable freshness test.)
-    fn on_result(&mut self, res: Option<GameResult>) -> bool {
+    ///
+    /// The game writes the result in one routine, the time early and the experience gained late, and a read can
+    /// land in between. So the time and outcome are taken when they first show, and the answer is "the result is
+    /// in" only once it has been read again a moment later (`RESULT_SETTLE`), which is when the experience is taken.
+    fn on_result(&mut self, res: Option<GameResult>, wall: f64) -> bool {
         let Some(res) = res else { return false };
         let Some(res0) = self.res0 else {
             self.res0 = Some(res);
             return false;
         };
-        let (_valid, t, objective, _leave) = res;
+        let (_valid, t, objective, _leave, xp) = res;
         if self.game_time.is_none() && t > 0.0 && t != res0.1 && (t - self.world_last).abs() < 60.0 {
             self.game_time = Some(t);
             self.outcome = match objective { 1 => Some("won"), 2 => Some("lost"), _ => None };
+            self.result_at = Some(wall);
             self.dirty = true;
-            return true;
+            return false;
+        }
+        if let (false, Some(at), Some(gt)) = (self.result_settled, self.result_at, self.game_time) {
+            if wall - at >= RESULT_SETTLE && t == gt {
+                self.result_settled = true;
+                self.xp = (xp > 0).then_some(xp);
+                self.dirty = true;
+                return true;
+            }
         }
         false
     }
@@ -671,6 +723,7 @@ impl Encounter {
                 self.friendly.insert(pe.id);
                 self.ent_client.insert(pe.id, pe.client);
                 let Some(p) = self.players.get_mut(&pe.client) else { continue };
+                p.ents.insert(pe.id);
                 if pe.dmg.is_some() {
                     p.native_total = pe.dmg;
                 }
@@ -686,17 +739,31 @@ impl Encounter {
             }
         }
         if !self.pending_hits.is_empty() && !self.friendly.is_empty() {
-            let held = std::mem::take(&mut self.pending_hits);
-            self.flushing = true;
-            for h in &held {
-                self.on_hit(h, r);
-            }
-            self.flushing = false;
+            self.flush(r, Some(s.t));
             for (src, tgt, hp) in std::mem::take(&mut self.pending_heals) {
                 self.on_heal(src, tgt, hp);
             }
         }
         self.dirty = true;
+    }
+
+    /// Count the hits that were held back. With `now` (world time), a hit whose source is still not known stays
+    /// held until it has waited `UNKNOWN_HOLD`; without it (the encounter is closing) everything is counted.
+    fn flush(&mut self, r: &Resolver, now: Option<f64>) {
+        let held = std::mem::take(&mut self.pending_hits);
+        let mut keep = Vec::new();
+        self.flushing = true;
+        for h in held {
+            let wait = now.is_some_and(|t| t - h.t < UNKNOWN_HOLD) && self.players.contains_key(&h.ac)
+                && r.attacker(h.at, h.ad.1) == Attacker::Unknown;
+            if wait {
+                keep.push(h);
+            } else {
+                self.on_hit(&h, r);
+            }
+        }
+        self.flushing = false;
+        self.pending_hits.extend(keep);
     }
 
     fn on_hit(&mut self, h: &Hit, r: &Resolver) {
@@ -742,11 +809,26 @@ impl Encounter {
             self.other_hits += 1;
             return;
         }
+        // Damage an enemy did: a Detonator's blast, a Multiplier clawing a turret. The game attributes it to a
+        // player (that is how it credits the kills), but it is not damage the player dealt.
+        match r.attacker(h.at, h.ad.1) {
+            Attacker::Enemy => {
+                self.enemy_hits += 1;
+                return;
+            }
+            // not in the mission's definition tables yet (they are being read again): decide when it is
+            Attacker::Unknown if !self.flushing && !self.ended && self.pending_hits.len() < 20000 => {
+                self.pending_hits.push(h.clone());
+                return;
+            }
+            _ => {}
+        }
         self.server_hits += 1;
         let key = attack_key(h);
         let tkey = if h.tdh != 0 { format!("{:08x}", h.tdh) } else { format!("i{}", h.tdi) };
         // a "final blow" on a prop (pod shell, barrel, crate) is not a kill: count enemies only
-        let kill = h.fl & c.hit_final != 0 && r.is_enemy(h.tdh);
+        let enemy = r.is_enemy(h.tdh);
+        let kill = h.fl & c.hit_final != 0 && enemy;
         let p = self.players.get_mut(&h.ac).unwrap();
         let cid = p.cid;
         p.total.add(&c, t, h, dmg, kill);
@@ -754,6 +836,15 @@ impl Encounter {
         src.0.add(&c, t, h, dmg, kill);
         src.1.add(t, dmg);
         p.series.add(t, dmg);
+        if enemy {
+            // the figures without structures: the target is an enemy, or nothing says it is not
+            p.core.add(&c, t, h, dmg, kill);
+            let src = p.core_sources.entry(key.clone()).or_default();
+            src.0.add(&c, t, h, dmg, kill);
+            src.1.add(t, dmg);
+            p.core_series.add(t, dmg);
+            self.core_party_series.add(t, dmg);
+        }
         p.targets.entry(tkey.clone()).or_default().add(&c, t, h, dmg, kill);
         self.party_series.add(t, dmg);
         self.targets.entry(tkey.clone()).or_default().add(&c, t, h, dmg, kill);
@@ -773,10 +864,9 @@ impl Encounter {
             }
         }
         if dmg > 0.0 {
-            if self.first_hit.is_none() {
-                self.first_hit = Some(t);
-            }
-            self.last_hit = Some(t);
+            // a hit that was held back is counted after later ones
+            self.first_hit = Some(self.first_hit.map_or(t, |f| min_f(f, t)));
+            self.last_hit = Some(self.last_hit.map_or(t, |l| max_f(l, t)));
         }
         self.hits.push((rnd(t, 3), h.ac, key, tkey, rnd(h.dh, 2), rnd(h.ds, 2), h.fl, h.dt, h.tgt));
         self.dirty = true;
@@ -799,10 +889,14 @@ impl Encounter {
     /// Mission time in seconds: InGame start until the mission ended (or now, while it is running).
     pub fn duration(&self) -> f64 { self.t_last }
 
-    pub fn party_damage(&self) -> f64 { self.players.values().map(|p| p.total.dmg).sum() }
+    /// What the players dealt between them, with or without damage to structures.
+    pub fn party_damage(&self, structures: bool) -> f64 {
+        self.players.values().map(|p| if structures { p.total.dmg } else { p.core.dmg }).sum()
+    }
 
     fn stats(&self) -> Value {
-        json!({ "server_hits": self.server_hits, "predicted_hits": self.predicted_hits, "other_hits": self.other_hits, "late": self.late })
+        json!({ "server_hits": self.server_hits, "predicted_hits": self.predicted_hits, "other_hits": self.other_hits,
+                "enemy_hits": self.enemy_hits, "late": self.late })
     }
 
     fn tag_name(&self, key: &str) -> String {
@@ -832,7 +926,7 @@ impl Encounter {
             out.push(obj(json!({
                 "key": key, "intervals": merged.iter().map(|iv| [rnd(iv[0], 2), rnd(iv[1], 2)]).collect::<Vec<_>>(), "total": total,
                 "uptime": min_f(1.0, total / dur), "applications": merged.len(), "types": meta.types, "owner": meta.owner,
-                "by": meta.by, "name": name, "kind": kind, "asset": asset,
+                "by": meta.by, "giver": meta.giver, "name": name, "kind": kind, "asset": asset,
             })));
         }
         let order = |b: &Map<String, Value>| (match b["kind"].as_str() { Some("Buff") => 0, Some("Debuff") => 1, _ => 2 }, -b["uptime"].as_f64().unwrap_or(0.0));
@@ -856,9 +950,18 @@ impl Encounter {
             skills: raw(p, "skills").as_array().into_iter().flatten()
                 .filter(|s| s[1].as_i64().unwrap_or(0) != 0).filter_map(|s| s[0].as_str().map(str::to_string)).collect(),
             by_hash: abilities.iter().map(|a| (a.hash, (a.asset.as_str(), a.name.as_str()))).collect(),
+            others: self.players.len().saturating_sub(1),
+            ally_builds: self.players.values().any(|q| q.cid != p.cid && q.build.is_some()),
         };
         let owner_of = |e: &Value| r.effect_owner(e, &ctx);
-        group_lanes(&abilities, self.buffs(&p.fx, None, r), max_f(self.t_last, 1e-6), Some(&owner_of))
+        let mut effects = self.buffs(&p.fx, None, r);
+        for e in &mut effects {
+            // who the game names as the giver: the player's own entity, a teammate's, something else, or nobody
+            let giver = e.get("giver").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let from = if giver == 0 { "" } else if p.ents.contains(&giver) { "self" } else if self.friendly.contains(&giver) { "ally" } else { "other" };
+            e.insert("from".into(), json!(from));
+        }
+        group_lanes(&abilities, effects, max_f(self.t_last, 1e-6), Some(&owner_of))
     }
 
     /// (first, last) mission time the boss existed: spawn to death when the game says so, else as observed.
@@ -968,6 +1071,9 @@ impl Encounter {
         list.into_iter().map(|(a, info, keys)| {
             let mut d = a.json();
             let boss = info.get("boss").and_then(Value::as_bool).unwrap_or(false);
+            // anything the game types as something other than an enemy: a crate, a pod, a barrel, level geometry
+            let structure = info.get("type").and_then(Value::as_str).is_some_and(|t| !t.is_empty() && t != self.c.entity_type(self.c.et_enemy));
+            d.insert("structure".into(), json!(structure));
             d.extend(info);
             let mut seen: Seen = BTreeMap::new();
             for k in &keys {
@@ -1058,14 +1164,16 @@ impl Encounter {
         Value::Object(out)
     }
 
-    fn live_rows(&self) -> (f64, f64, Vec<Value>) {
+    /// One row per player for the live view, in one of the two views: (mission time, party damage, rows).
+    fn live_rows(&self, structures: bool) -> (f64, f64, Vec<Value>) {
         let ct = max_f(self.duration(), 1.0);
-        let party = self.party_damage();
+        let party = self.party_damage(structures);
         let mut rows: Vec<(f64, Value)> = self.players.values().filter(|p| p.total.hits != 0 || !p.name.is_empty()).map(|p| {
-            (p.total.dmg, json!({
-                "cid": p.cid, "name": p.name, "cls": p.cls, "sub": p.sub, "local": p.local, "damage": p.total.dmg,
-                "dps": p.total.dmg / ct, "share": if party != 0.0 { p.total.dmg / party } else { 0.0 },
-                "crit": if p.total.hits != 0 { p.total.crits as f64 / p.total.hits as f64 } else { 0.0 }, "hits": p.total.hits,
+            let a = if structures { &p.total } else { &p.core };
+            (a.dmg, json!({
+                "cid": p.cid, "name": p.name, "cls": p.cls, "sub": p.sub, "local": p.local, "damage": a.dmg,
+                "dps": a.dmg / ct, "share": if party != 0.0 { a.dmg / party } else { 0.0 },
+                "crit": if a.hits != 0 { a.crits as f64 / a.hits as f64 } else { 0.0 }, "hits": a.hits,
                 "taken": p.taken, "downs": p.downs,
             }))
         }).collect();
@@ -1073,17 +1181,27 @@ impl Encounter {
         (ct, party, rows.into_iter().map(|r| r.1).collect())
     }
 
-    /// Small payload for the overlay / live view.
-    pub fn live(&self) -> Value {
-        let (ct, party, rows) = self.live_rows();
-        json!({ "id": self.id, "mission": self.mission, "elapsed": self.duration(), "party_damage": party, "party_dps": party / ct,
-                "players": rows, "closed": self.closed, "result": self.result, "ended": self.ended, "game_time": self.game_time,
-                "outcome": self.outcome })
+    /// The figures that change when damage to structures is counted, in the shape `view` swaps in: the party's
+    /// totals and, per client id, that player's row.
+    fn with_structures(&self, ct: f64, pick: &[&str]) -> Value {
+        let (_, party, rows) = self.live_rows(true);
+        let players: Map<String, Value> = rows.into_iter().map(|r| {
+            (r["cid"].to_string(), Value::Object(pick.iter().map(|k| (k.to_string(), r[*k].clone())).collect()))
+        }).collect();
+        json!({ "party_damage": party, "party_dps": party / ct, "players": players })
     }
 
-    /// False for a world that is not a mission: the hub, which the game builds without a level mode, and a world
-    /// whose definitions have not been read yet (its first moments). Such a world is not shown as a mission and
-    /// not saved.
+    /// Small payload for the overlay / live view.
+    pub fn live(&self) -> Value {
+        let (ct, party, rows) = self.live_rows(false);
+        json!({ "id": self.id, "mission": self.mission, "elapsed": self.duration(), "party_damage": party, "party_dps": party / ct,
+                "players": rows, "closed": self.closed, "result": self.result, "ended": self.ended, "game_time": self.game_time,
+                "outcome": self.outcome, "xp": self.xp,
+                "with_structures": self.with_structures(ct, &["damage", "dps", "share", "crit", "hits"]) })
+    }
+
+    /// False for a world that is not a mission: the hub, and a world whose definitions have not been read yet (its
+    /// first moments). Such a world is not shown as a mission and not saved.
     pub fn is_mission(&self) -> bool {
         self.mission.get("name").is_some() && self.mission["hub"].as_bool() != Some(true)
     }
@@ -1095,97 +1213,165 @@ impl Encounter {
 
     /// Row for the encounter list.
     pub fn summary(&self) -> Value {
-        let (ct, party, rows) = self.live_rows();
-        let players: Vec<Value> = rows.iter().map(|r| json!({ "name": r["name"], "cls": r["cls"], "sub": r["sub"],
+        let (ct, party, rows) = self.live_rows(false);
+        let players: Vec<Value> = rows.iter().map(|r| json!({ "cid": r["cid"], "name": r["name"], "cls": r["cls"], "sub": r["sub"],
             "damage": r["damage"], "dps": r["dps"], "local": r["local"] })).collect();
         json!({ "id": self.id, "start": self.start_wall, "mission": self.mission, "duration": self.duration(),
                 "party_damage": party, "party_dps": party / ct, "result": self.result, "closed": self.closed,
-                "game_time": self.game_time, "outcome": self.outcome, "players": players })
+                "game_time": self.game_time, "outcome": self.outcome, "xp": self.xp, "format": FORMAT, "players": players,
+                "with_structures": self.with_structures(ct, &["damage", "dps"]) })
+    }
+
+    /// The damage figures of one player in one of the two views: the totals, the rate, the share of the party's
+    /// damage, the sources and the damage over time.
+    fn damage_json(&self, p: &Player, structures: bool, party: f64, ct: f64, n: i64, r: &Resolver) -> Map<String, Value> {
+        let (total, sources, series) = if structures { (&p.total, &p.sources, &p.series) } else { (&p.core, &p.core_sources, &p.core_series) };
+        // sources with one name that are not equipped weapons are one row: a turret is a separate definition per
+        // deployment slot, a barrel per level, and so on
+        let mut rows: IndexMap<String, (Agg, Series, Map<String, Value>)> = IndexMap::new();
+        for (key, (a, series)) in sources {
+            let info = obj(r.attack(key));
+            let kind = info.get("kind").and_then(Value::as_str).unwrap_or("");
+            let gk = if kind == "weapon" { format!("k:{key}") } else { format!("n:{}\u{0}{kind}", info["name"].as_str().unwrap_or("")) };
+            match rows.get_mut(&gk) {
+                Some(row) => {
+                    row.0.merge(a);
+                    row.1.merge(series);
+                }
+                None => {
+                    let mut info = info;
+                    info.insert("key".into(), json!(key));
+                    rows.insert(gk, (a.clone(), series.clone(), info));
+                }
+            }
+        }
+        let mut list: Vec<(Agg, Series, Map<String, Value>)> = rows.into_values().collect();
+        list.sort_by(|a, b| b.0.dmg.partial_cmp(&a.0.dmg).unwrap_or(std::cmp::Ordering::Equal));
+        let mut srcs: Vec<Map<String, Value>> = list.into_iter().map(|(a, series, info)| {
+            let mut d = a.json();
+            d.extend(info);
+            d.insert("series".into(), series.sparse());
+            d
+        }).collect();
+        // by the game's own attack type: its weapons, and what hits directly (weapons and abilities)
+        let by_type = |types: &[u8]| sources.iter().filter(|(k, _)| types.iter().any(|t| k.starts_with(&format!("{t}:")))).map(|(_, v)| v.0.dmg).sum::<f64>();
+        let (direct, weapon) = (by_type(&[self.c.at_weapon, self.c.at_ability]), by_type(&[self.c.at_weapon]));
+        // two copies of one weapon (dual / swap builds) are separate sources: tell them apart by slot
+        let mut same: IndexMap<String, Vec<usize>> = IndexMap::new();
+        for (i, d) in srcs.iter().enumerate() {
+            if d.get("kind").and_then(Value::as_str) == Some("weapon") {
+                same.entry(d["name"].as_str().unwrap_or("").to_string()).or_default().push(i);
+            }
+        }
+        for idx in same.into_values().filter(|v| v.len() > 1) {
+            for i in idx {
+                let hash = srcs[i]["key"].as_str().and_then(|k| k.split(':').nth(1)).and_then(|h| u32::from_str_radix(h, 16).ok());
+                if let Some(slot) = hash.and_then(|h| p.weapon_slot.get(&h)) {
+                    let name = format!("{} (weapon {})", srcs[i]["name"].as_str().unwrap_or(""), slot + 1);
+                    srcs[i].insert("name".into(), json!(name));
+                }
+            }
+        }
+        let mut d = total.json();
+        d.extend(obj(json!({
+            "dps": total.dmg / ct, "share": if party != 0.0 { total.dmg / party } else { 0.0 }, "sources": srcs,
+            "series": series.dense(n), "direct_damage": direct, "weapon_damage": weapon,
+        })));
+        d
     }
 
     pub fn detail(&self, r: &Resolver) -> Value {
         let ct = max_f(self.duration(), 1.0);
-        let party = self.party_damage();
+        let (party, party_all) = (self.party_damage(false), self.party_damage(true));
         let n = bucket(self.t_last) + 1;
         let mut order: Vec<&Player> = self.players.values().collect();
-        order.sort_by(|a, b| b.total.dmg.partial_cmp(&a.total.dmg).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|a, b| b.core.dmg.partial_cmp(&a.core.dmg).unwrap_or(std::cmp::Ordering::Equal));
         let mut players = Vec::new();
+        let mut players_all = Map::new();
         for p in order {
-            // sources with one name that are not equipped weapons are one row: an enemy that explodes on death is
-            // a separate definition per difficulty stage, a turret per deployment slot, and so on
-            let mut rows: IndexMap<String, (Agg, Series, Map<String, Value>)> = IndexMap::new();
-            for (key, (a, series)) in &p.sources {
-                let info = obj(r.attack(key));
-                let kind = info.get("kind").and_then(Value::as_str).unwrap_or("");
-                let gk = if kind == "weapon" { format!("k:{key}") } else { format!("n:{}\u{0}{kind}", info["name"].as_str().unwrap_or("")) };
-                match rows.get_mut(&gk) {
-                    Some(row) => {
-                        row.0.merge(a);
-                        row.1.merge(series);
-                    }
-                    None => {
-                        let mut info = info;
-                        info.insert("key".into(), json!(key));
-                        rows.insert(gk, (a.clone(), series.clone(), info));
-                    }
-                }
-            }
-            let mut list: Vec<(Agg, Series, Map<String, Value>)> = rows.into_values().collect();
-            list.sort_by(|a, b| b.0.dmg.partial_cmp(&a.0.dmg).unwrap_or(std::cmp::Ordering::Equal));
-            let mut srcs: Vec<Map<String, Value>> = list.into_iter().map(|(a, series, info)| {
-                let mut d = a.json();
-                d.extend(info);
-                d.insert("series".into(), series.sparse());
-                d
-            }).collect();
-            let sum = |pre: &[&str]| p.sources.iter().filter(|(k, _)| pre.iter().any(|x| k.starts_with(x))).map(|(_, v)| v.0.dmg).sum::<f64>();
-            let (direct, weapon) = (sum(&["0:", "1:"]), sum(&["0:"]));
-            // two copies of one weapon (dual / swap builds) are separate sources: tell them apart by slot
-            let mut same: IndexMap<String, Vec<usize>> = IndexMap::new();
-            for (i, d) in srcs.iter().enumerate() {
-                if d.get("kind").and_then(Value::as_str) == Some("weapon") {
-                    same.entry(d["name"].as_str().unwrap_or("").to_string()).or_default().push(i);
-                }
-            }
-            for idx in same.into_values().filter(|v| v.len() > 1) {
-                for i in idx {
-                    let hash = srcs[i]["key"].as_str().and_then(|k| k.split(':').nth(1)).and_then(|h| u32::from_str_radix(h, 16).ok());
-                    if let Some(slot) = hash.and_then(|h| p.weapon_slot.get(&h)) {
-                        let name = format!("{} (weapon {})", srcs[i]["name"].as_str().unwrap_or(""), slot + 1);
-                        srcs[i].insert("name".into(), json!(name));
-                    }
-                }
-            }
             let mut taken: Vec<(f64, Value)> = p.taken_by.iter().map(|(k, v)| {
                 let mut d = obj(json!({ "key": k, "damage": v.0, "hits": v.1 }));
                 d.extend(obj(r.attack(k)));
                 (v.0, Value::Object(d))
             }).collect();
             taken.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            let mut d = p.total.json();
+            let mut d = self.damage_json(p, false, party, ct, n, r);
             d.extend(obj(json!({
                 "cid": p.cid, "name": p.name, "cls": p.cls, "sub": p.sub, "lvl": p.lvl, "local": p.local, "host": p.host,
-                "dps": p.total.dmg / ct, "share": if party != 0.0 { p.total.dmg / party } else { 0.0 },
-                "sources": srcs, "targets": self.targets_json(&p.targets, r), "series": p.series.dense(n), "taken": p.taken,
+                "targets": self.targets_json(&p.targets, r), "taken": p.taken,
                 "taken_hits": p.taken_hits, "taken_by": taken.into_iter().map(|t| t.1).collect::<Vec<_>>(),
                 "taken_series": p.taken_series.dense(n), "healed": p.healed, "kills_native": p.kills_native, "downs": p.downs,
-                "accuracy": p.accuracy, "native_total": p.native_total, "lanes": self.lanes(p, r), "direct_damage": direct,
-                "weapon_damage": weapon, "build": p.build, "hp_max": p.hp_max,
+                "accuracy": p.accuracy, "native_total": p.native_total, "lanes": self.lanes(p, r), "build": p.build, "hp_max": p.hp_max,
                 "hp_series": (0..n).map(|i| p.hp_series.get(&i).map(|v| json!([v.0, v.1])).unwrap_or(Value::Null)).collect::<Vec<_>>(),
             })));
+            let all = self.damage_json(p, true, party_all, ct, n, r);
+            // what the game's own damage counter is checked against, whichever view is shown: it counts structures
+            d.insert("counter_direct".into(), all["direct_damage"].clone());
+            d.insert("counter_weapon".into(), all["weapon_damage"].clone());
             players.push(Value::Object(d));
+            players_all.insert(p.cid.to_string(), Value::Object(all));
         }
         let fresh_world = self.world_first.is_some_and(|w| w < 5.0);
         json!({
             "id": self.id, "match": self.match_id, "start": self.start_wall, "end": self.end_wall, "mission": self.mission,
-            "duration": self.duration(), "game_time": self.game_time, "outcome": self.outcome,
+            "duration": self.duration(), "game_time": self.game_time, "outcome": self.outcome, "xp": self.xp,
             "intro": match (self.t0, self.world_first) { (Some(t0), Some(w)) if fresh_world => Some(t0 - w), _ => None },
             "world_clock": fresh_world.then_some(self.world_last),
             "first_hit": self.first_hit, "last_hit": self.last_hit, "party_damage": party, "party_dps": party / ct,
-            "result": self.result, "bucket": BUCKET, "series": self.party_series.dense(n), "players": players,
+            "result": self.result, "bucket": BUCKET, "series": self.core_party_series.dense(n), "players": players,
             "targets": self.targets_json(&self.targets, r), "stats": self.stats(), "format": FORMAT, "events": self.events(r),
             "bosses": self.bosses_json(n, r), "closed": self.closed, "damage_types": self.c.damage_types,
+            "with_structures": { "party_damage": party_all, "party_dps": party_all / ct, "series": self.party_series.dense(n),
+                                 "players": players_all },
         })
+    }
+}
+
+/// Puts a log, a list row or a live payload into one of its two views, in place.
+///
+/// As recorded, the figures leave damage to structures out and `with_structures` holds the ones that count it
+/// (see `Encounter::with_structures`). `include` swaps those in and puts the players back in order of damage;
+/// without it the rows of structures are dropped from the target lists, so every list adds up to the totals shown.
+/// `structures` says what the result is: "on", "off", or "always" for a log recorded before the two were kept
+/// apart, which has one set of figures with structures in them.
+pub fn view(v: &mut Value, include: bool) {
+    let Some(doc) = v.as_object_mut() else { return };
+    let overlay = doc.remove("with_structures");
+    let state = match (&overlay, include) { (None, _) => "always", (Some(_), true) => "on", (Some(_), false) => "off" };
+    doc.insert("structures".into(), json!(state));
+    match overlay {
+        Some(Value::Object(overlay)) if include => {
+            for (key, value) in overlay {
+                if key != "players" {
+                    doc.insert(key, value);
+                    continue;
+                }
+                let Value::Object(mut theirs) = value else { continue };
+                let rows = doc.get_mut("players").and_then(Value::as_array_mut);
+                for p in rows.into_iter().flatten().filter_map(Value::as_object_mut) {
+                    let cid = p.get("cid").map(Value::to_string).unwrap_or_default();
+                    if let Some(Value::Object(fields)) = theirs.remove(&cid) {
+                        p.extend(fields);
+                    }
+                }
+            }
+            if let Some(rows) = doc.get_mut("players").and_then(Value::as_array_mut) {
+                let damage = |p: &Value| p["damage"].as_f64().unwrap_or(0.0);
+                rows.sort_by(|a, b| damage(b).partial_cmp(&damage(a)).unwrap_or(std::cmp::Ordering::Equal));
+            }
+        }
+        Some(_) => {
+            let drop_structures = |rows: Option<&mut Value>| {
+                if let Some(rows) = rows.and_then(Value::as_array_mut) {
+                    rows.retain(|t| t["structure"].as_bool() != Some(true));
+                }
+            };
+            drop_structures(doc.get_mut("targets"));
+            for p in doc.get_mut("players").and_then(Value::as_array_mut).into_iter().flatten() {
+                drop_structures(p.get_mut("targets"));
+            }
+        }
+        None => {}
     }
 }
 
@@ -1199,7 +1385,7 @@ fn new_boss(hash: u32) -> Boss {
 /// type, plus the ability that applied them when the game attributes one.
 fn effects(c: &Consts, fx: &mut Fx, rows: &[Effect], t: f64, t0: f64, any_owner: bool) {
     let mut seen: HashSet<u16> = HashSet::new();
-    for &(iid, hash, ty, apply_t, _dur, state, susp, lvl, _giver, at, ah) in rows {
+    for &(iid, hash, ty, apply_t, _dur, state, susp, lvl, giver, at, ah) in rows {
         if state != c.fx_applied || susp != 0 {
             continue;
         }
@@ -1213,6 +1399,9 @@ fn effects(c: &Consts, fx: &mut Fx, rows: &[Effect], t: f64, t0: f64, any_owner:
         }
         if owner != 0 {
             meta.owner = owner;
+        }
+        if giver != 0 {
+            meta.giver = giver;
         }
         seen.insert(iid);
         match fx.live.get_mut(&iid) {
@@ -1384,7 +1573,7 @@ impl Tracker {
         }
         let stalled = self.leaving.is_none() && self.last_frame_wall.is_some_and(|w| wall - w > 2.0);
         let Some(e) = &mut self.cur else { return };
-        if e.on_result(res) && e.ended {
+        if e.on_result(res, wall) && e.ended {
             self.close();
             return;
         }
@@ -1408,7 +1597,7 @@ impl Tracker {
         }
         let Tracker { cur, resolver, match_id, leaving, .. } = self;
         let e = cur.as_mut().unwrap();
-        let fresh = e.on_result(s.res) && e.ended; // mission over and the game's own time is known: save the log
+        let fresh = e.on_result(s.res, s.wall) && e.ended; // mission over and the game's result is in: save the log
         let new_match = match_id.is_some() && !s.match_id.is_empty() && match_id.as_deref() != Some(&s.match_id) && e.match_id.is_some();
         if !fresh && (leaving.is_some() || e.ended) {
             return;
@@ -1437,8 +1626,150 @@ impl Tracker {
         if !e.ended {
             e.end("left");
         }
+        e.flush(&self.resolver, None); // hits still held back are counted now
         e.closed = true;
         e.end_wall = Some(self.last_frame_wall.unwrap_or_else(crate::mem::now));
         self.closed.push(e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WEAPON: u32 = 0xA1;
+    const ZOMBIE: u32 = 0xE1;
+    const DETONATOR: u32 = 0xD1;
+    const CRATE: u32 = 0xC1;
+    const TURRET: u32 = 0x71;
+    const BARREL: u32 = 0xB1;
+
+    fn frame(c: &Consts, wall: f64, t: f64, ended: bool) -> Rec {
+        Rec::Frame(Frame { wall, t, ct: t, cs: if ended { c.cs_ended } else { c.cs_running }, cid: 1, paused: 0, ws: c.ws_ingame, wf: 0,
+            snap: 0, ctl: 0, nent: 0, nenemy: 0, nev: 0 })
+    }
+
+    /// The mission's definitions: one weapon, and one entity per kind the tests hit or are hit by.
+    fn defs(c: &Consts, more_enemies: &[u32]) -> Rec {
+        let entity = |hash: u32, kind: &str| (hash, 0, 0, c.entity_types.iter().position(|t| t == kind).unwrap() as u8, 0, -1);
+        let mut entities = vec![entity(ZOMBIE, "Enemy"), entity(DETONATOR, "Enemy"), entity(CRATE, "Destructible"), entity(TURRET, "Turret"),
+            entity(BARREL, "ExplosiveBarrel")];
+        entities.extend(more_enemies.iter().map(|h| entity(*h, "Enemy")));
+        Rec::Defs(Box::new(Defs { level: "Assets/Levels/Operations/Op_Test.unity".into(), level_type: Some(2), mode: "ModeTest".into(),
+            difficulty: 2, weapons: vec![(WEAPON, 0, 0, "Weapon_Title".into())], entities, ..Default::default() }))
+    }
+
+    fn sample(wall: f64, t: f64) -> Rec {
+        let client = Client { id: 1, dc: 0, lvl: 30, host: 1, name: "P".into(), cls: "assault".into(), sub: String::new(), nk: String::new(),
+            kills: 0, downs: 0, acc: 0.0, crit_kills: 0, attacks: Vec::new(), uses: Vec::new() };
+        let me = PlayerEnt { id: 100, client: 1, hp: 100.0, hpmax: 100.0, sh: 0.0, shmax: 0.0, flags: 0, downs: 0, aw: 0, dmg: None,
+            fx: Vec::new(), ab: Vec::new(), wp: Vec::new() };
+        Rec::Sample(Sample { wall, t, match_id: "m".into(), clients: vec![client], ents: Some(Ents { n: 1, players: vec![me], ..Default::default() }), res: None })
+    }
+
+    /// A hit the server reports, credited to client 1: `attack` = (attack type, source definition).
+    fn hit(c: &Consts, t: f64, attack: (u8, u32), target: u32, dmg: f64) -> Rec {
+        Rec::Hit(Hit { t, seq: 0, src: c.src_server, sc: 0, tgt: 500, tdi: 0, tdh: target, da: dmg, dhu: dmg, dsu: 0.0, dh: dmg, ds: 0.0,
+            res: 0.0, ress: 0.0, fl: 0, dt: 0, ac: 1, ai: 0, at: attack.0, ad: (0, attack.1), af: 0, pos: (0.0, 0.0, 0.0), late: None })
+    }
+
+    #[test]
+    fn whose_damage_is_counted() {
+        let c = consts::install_for_tests();
+        let entity_attack = c.attack_types.iter().position(|t| t == "Entity").unwrap() as u8;
+        let (weapon, by) = ((c.at_weapon, WEAPON), |hash: u32| (entity_attack, hash));
+        let (late_enemy, never_defined) = (0x99, 0x98);
+        let mut t = Tracker::new(Resolver::empty());
+        t.feed(&[frame(&c, 10.0, 1.0, false), defs(&c, &[]), sample(10.0, 1.0)]);
+        t.feed(&[
+            hit(&c, 2.0, weapon, ZOMBIE, 100.0),
+            hit(&c, 2.0, weapon, CRATE, 50.0),
+            // an enemy's own damage, which the game credits to the player: a blast among zombies, a turret clawed
+            hit(&c, 2.5, by(DETONATOR), ZOMBIE, 30.0),
+            hit(&c, 2.5, by(DETONATOR), TURRET, 20.0),
+            // a barrel the player set off is the player's
+            hit(&c, 3.0, by(BARREL), ZOMBIE, 10.0),
+            // sources the mission's tables do not have yet: held until they do, or for a while
+            hit(&c, 3.0, by(late_enemy), ZOMBIE, 7.0),
+            hit(&c, 3.0, by(never_defined), ZOMBIE, 5.0),
+        ]);
+        let e = t.cur.as_ref().unwrap();
+        assert_eq!((e.party_damage(false), e.party_damage(true), e.enemy_hits, e.pending_hits.len()), (110.0, 160.0, 2, 2));
+
+        // the tables are read again and the first of the two turns out to be an enemy; the other stays unknown,
+        // and is counted once it has waited long enough
+        t.feed(&[frame(&c, 10.2, 3.2, false), defs(&c, &[late_enemy]), sample(10.2, 3.2)]);
+        let e = t.cur.as_ref().unwrap();
+        assert_eq!((e.party_damage(false), e.enemy_hits, e.pending_hits.len()), (110.0, 3, 1));
+        t.feed(&[frame(&c, 13.0, 6.0, false), sample(13.0, 6.0)]);
+        let e = t.cur.as_ref().unwrap();
+        assert_eq!((e.party_damage(false), e.party_damage(true), e.enemy_hits, e.pending_hits.len()), (115.0, 165.0, 3, 0));
+
+        // the log: figures without structures, the ones with them next to it
+        let d = e.detail(&t.resolver);
+        assert_eq!((d["party_damage"].as_f64(), d["with_structures"]["party_damage"].as_f64()), (Some(115.0), Some(165.0)));
+        let p = &d["players"][0];
+        assert_eq!((p["damage"].as_f64(), p["hits"].as_u64(), d["with_structures"]["players"]["1"]["damage"].as_f64()), (Some(115.0), Some(3), Some(165.0)));
+        let sources = |p: &Value| p["sources"].as_array().unwrap().iter().map(|s| (s["kind"].as_str().unwrap().to_string(), s["damage"].as_f64().unwrap())).collect::<Vec<_>>();
+        assert_eq!(sources(p), [("weapon".to_string(), 100.0), ("barrel".to_string(), 10.0), ("entity".to_string(), 5.0)]);
+        assert_eq!(sources(&d["with_structures"]["players"]["1"])[0], ("weapon".to_string(), 150.0));
+        assert_eq!(d["stats"]["enemy_hits"], 3);
+        let targets = |d: &Value| d["targets"].as_array().unwrap().iter().map(|t| (t["type"].as_str().unwrap().to_string(), t["structure"].as_bool().unwrap())).collect::<Vec<_>>();
+        assert_eq!(targets(&d), [("Enemy".to_string(), false), ("Destructible".to_string(), true)], "no turret: only an enemy hit it");
+
+        // the two views of it
+        let (mut off, mut on) = (d.clone(), d.clone());
+        view(&mut off, false);
+        view(&mut on, true);
+        assert_eq!((off["structures"].as_str(), off["party_damage"].as_f64(), off["targets"].as_array().unwrap().len()), (Some("off"), Some(115.0), 1));
+        assert_eq!(off["players"][0]["targets"].as_array().unwrap().len(), 1);
+        assert_eq!((on["structures"].as_str(), on["party_damage"].as_f64(), on["targets"].as_array().unwrap().len()), (Some("on"), Some(165.0), 2));
+        assert_eq!((on["players"][0]["damage"].as_f64(), on["players"][0]["sources"][0]["damage"].as_f64()), (Some(165.0), Some(150.0)));
+        assert!(off.get("with_structures").is_none() && on.get("with_structures").is_none());
+        // a list row and a live payload switch the same way; a log from before the split has one set of figures
+        let (mut row, mut live) = (e.summary(), e.live());
+        view(&mut row, true);
+        view(&mut live, true);
+        assert_eq!((row["party_damage"].as_f64(), row["players"][0]["damage"].as_f64(), live["players"][0]["damage"].as_f64()), (Some(165.0), Some(165.0), Some(165.0)));
+        let mut old = json!({ "party_damage": 9.0, "players": [], "targets": [{ "type": "Destructible" }] });
+        view(&mut old, false);
+        assert_eq!((old["structures"].as_str(), old["targets"].as_array().unwrap().len()), (Some("always"), 1));
+    }
+
+    #[test]
+    fn the_result_is_read_once_the_game_has_written_all_of_it() {
+        let c = consts::install_for_tests();
+        let mut t = Tracker::new(Resolver::empty());
+        // what the last mission left behind
+        t.feed(&[Rec::Idle { wall: 90.0, res: Some((1, 50.0, 1, 0, 111)) }]);
+        t.feed(&[frame(&c, 99.0, 1.0, false), defs(&c, &[]), sample(99.0, 1.0), hit(&c, 2.0, (c.at_weapon, WEAPON), ZOMBIE, 100.0),
+            frame(&c, 99.5, 10.0, false), frame(&c, 99.6, 10.1, true)]);
+        assert!(t.cur.as_ref().unwrap().ended && t.closed.is_empty());
+        // the time shows first, with the experience still that of the last mission
+        t.feed(&[Rec::Idle { wall: 100.0, res: Some((1, 12.5, 1, 0, 111)) }]);
+        t.feed(&[Rec::Idle { wall: 100.1, res: Some((1, 12.5, 1, 0, 111)) }]);
+        assert!(t.closed.is_empty(), "not yet: the game may still be writing its result");
+        t.feed(&[Rec::Idle { wall: 100.5, res: Some((1, 12.5, 1, 0, 2400)) }]);
+        let e = &t.closed[0];
+        assert_eq!((e.game_time, e.outcome, e.xp, e.result), (Some(12.5), Some("won"), Some(2400), Some("finished")));
+        assert_eq!((e.summary()["xp"].as_u64(), e.is_mission()), (Some(2400), true));
+    }
+
+    #[test]
+    fn what_an_effect_leaves_behind_belongs_to_it() {
+        consts::install_for_tests();
+        let dash = AbLane { name: "Dash".into(), asset: "dash_ability".into(), hash: 1, uses: vec![(3.41, 3.71, Some(45.4))] };
+        let effect = |key: &str, name: &str, a: f64, z: f64| obj(json!({ "key": key, "name": name, "kind": "", "intervals": [[a, z]], "total": z - a,
+            "uptime": (z - a) / 100.0, "applications": 1, "types": [7], "owner": 0, "by": "", "asset": "" }));
+        let owner_of = |e: &Value| (e["key"] == "8b154ce5").then(|| ("ability", "dash_ability".to_string(), Some("Relay Race".to_string())));
+        let lanes = group_lanes(&[dash], vec![
+            effect("8b154ce5", "Relay Race", 3.41, 4.41),
+            // starts as the Relay Race set ends: the speed it grants. And one that merely happens later.
+            effect("t7", "Movement speed modifier", 4.42, 9.41),
+            effect("t11", "Block actions", 60.0, 63.0),
+        ], 100.0, Some(&owner_of));
+        let rows: Vec<(&str, &str, &str)> = lanes.iter().map(|l| (l["group"].as_str().unwrap(), l["name"].as_str().unwrap(), l["source"].as_str().unwrap_or(""))).collect();
+        assert_eq!(rows, [("Abilities", "Dash", ""), ("Abilities", "Relay Race", "Dash"),
+            ("Abilities", "Relay Race: movement speed modifier", "Dash"), ("Other effects", "Block actions", "")]);
     }
 }

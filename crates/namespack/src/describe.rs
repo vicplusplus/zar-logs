@@ -209,6 +209,9 @@ pub(crate) struct Enums<'a> {
     set_type: HashMap<i128, &'a str>,
     pub skill_point_type: HashMap<i128, &'a str>,
     pub description_kind: HashMap<i128, &'a str>,
+    /// where the number in an ability upgrade's description comes from (`AbilityDescriptionParameterSource`)
+    pub description_source: HashMap<i128, &'a str>,
+    pub effect_type_names: HashMap<i128, &'a str>,
     trigger_flags: Vec<(&'a str, i128)>,
     scope_flags: Vec<(&'a str, i128)>,
     entity_mask: Vec<(&'a str, i128)>,
@@ -260,6 +263,8 @@ impl<'a> Enums<'a> {
             set_type: names(enums, "StatusEffectSetType"),
             skill_point_type: names(enums, "SkillPointType"),
             description_kind: names(enums, "PassiveSkillDescriptionBonusType"),
+            description_source: names(enums, "AbilityDescriptionParameterSource"),
+            effect_type_names: names(enums, "StatusEffectType"),
             trigger_flags: members(enums, "BehaviourTriggerFlags"),
             scope_flags: members(enums, "BonusScopeFlags"),
             entity_mask: members(enums, "GameEntityMask"),
@@ -336,7 +341,7 @@ impl Game<'_> {
     }
 
     /// The registry entries a stripped behaviour list (`{"m_List": [{"rid": n}, ...]}`) points at.
-    fn listed<'v>(list: &Value, registry: &HashMap<i64, &'v Value>) -> Vec<&'v Value> {
+    pub(crate) fn listed<'v>(list: &Value, registry: &HashMap<i64, &'v Value>) -> Vec<&'v Value> {
         let rids = items(list.get("m_List")).iter().filter_map(|e| e.get("rid")?.as_i64());
         rids.filter_map(|rid| registry.get(&rid).copied()).collect()
     }

@@ -54,6 +54,14 @@ pub(crate) fn at_level(parameter: &Value, level: i64) -> f64 {
     total
 }
 
+/// A parameter of an ability upgrade's or enhancement's bonus for a player at `level`
+/// (`AbilityUpgradeBonusDefinition.GetParameterBonus`, with the rank of 1 such a bonus has): `initialBonus` plus
+/// `bonus`, plus `statBonusPerPlayerLevel` for every level above `startingLevelForStatBonusPerLevel`.
+pub(crate) fn of_upgrade(parameter: &Value, level: i64) -> f64 {
+    let above = (level as f64 - field(parameter, "startingLevelForStatBonusPerLevel")).max(0.0);
+    above * field(parameter, "statBonusPerPlayerLevel") + field(parameter, "initialBonus") + field(parameter, "bonus")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +75,12 @@ mod tests {
         assert_eq!([at_rank(&linear, 1, 60), at_rank(&linear, 3, 60)], [9.5, 17.0]);
         let growing = json!({ "initialBonus": 10.0, "initialBonusMultiplierPerRank": 2.0, "manualRankValues": [1] });
         assert_eq!(at_rank(&growing, 3, 60), 40.0);
+    }
+
+    #[test]
+    fn upgrades() {
+        let p = json!({ "initialBonus": 250.0, "statBonusPerPlayerLevel": 20.0, "startingLevelForStatBonusPerLevel": 20.0 });
+        assert_eq!([of_upgrade(&p, 1), of_upgrade(&p, 20), of_upgrade(&p, 30)], [250.0, 250.0, 450.0]);
     }
 
     #[test]

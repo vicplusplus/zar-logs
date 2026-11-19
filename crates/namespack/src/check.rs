@@ -63,7 +63,8 @@ pub(crate) fn problems(so: &HashMap<String, Obj>, enums: &Value) -> Vec<String> 
     let dps_effect = DPS_EFFECT_TYPES.iter().map(|member| ("StatusEffectType", *member, "the damage-relevant effect types"));
     let own = OWN_FIELDS.iter().map(|(member, _)| ("StatusEffectType", *member, "the effect types with fields of their own"));
     let special = NAMED_MEMBERS.iter().map(|(table, member)| (*table, *member, "the members with a special meaning"));
-    for (table, member, list) in dps_bonus.chain(dps_effect).chain(own).chain(special) {
+    let numbers = crate::enhancements::MEMBERS.iter().map(|(table, member)| (*table, *member, "the numbers of enhancement descriptions"));
+    for (table, member, list) in dps_bonus.chain(dps_effect).chain(own).chain(special).chain(numbers) {
         // an enum that was not given at all is the caller's business (`skill_rows` refuses to run without it)
         if enums.get(table).is_some_and(|members| members.get(member).is_none()) {
             out.push(format!("enum {table} has no member {member} (named in {list})"));

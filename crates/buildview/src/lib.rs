@@ -23,12 +23,15 @@ use zar_logs_namespack::SkillRow;
 pub type Definitions = HashMap<String, Map<String, Value>>;
 
 /// The version of the structure `render` produces; the page checks it.
-pub const VERSION: u64 = 5;
+pub const VERSION: u64 = 6;
 /// The definition classes `BuildData` reads names, texts and icon references from.
 pub const CLASSES: &[&str] = &["WeaponDefinitionSO", "ArmourPieceSO", "GearModEnhancementDefinitionSO", "AbilityDefinitionSO",
     "PassiveSkillDefinitionSO", "PlayerClassDefinitionSO"];
 /// The game enums the labels are taken from.
-pub const ENUMS: &[&str] = &["ItemQuality", "GearType", "GearModType", "DamageType", "WeaponCategory", "DeployableCategory"];
+pub const ENUMS: &[&str] = &["ItemQuality", "GearType", "GearModType", "DamageType", "WeaponCategory", "DeployableCategory",
+    "AbilityDescriptionParameterSource"];
+/// The member of `AbilityDescriptionParameterSource` for a number that is a parameter of one of the entry's bonuses.
+const FROM_BONUS: &str = "BonusParameter";
 
 /// A number with up to `digits` decimals, trailing zeros dropped: 2.50 -> "2.5", 3.00 -> "3".
 fn num(v: f64, digits: usize) -> String {
@@ -119,6 +122,8 @@ pub struct Tables {
     /// names this program looks for that this game version no longer has (`zar_logs_namespack::check`): empty
     /// when all is well, otherwise an update renamed or removed something and a cell may be off
     pub notes: Vec<String>,
+    /// the numbers in the descriptions of the unique gear mods, per quality (`zar_logs_namespack::enhancement_numbers`)
+    pub enhancement_numbers: Map<String, Value>,
 }
 
 fn collect_guids(v: &Value, out: &mut Vec<String>) {
@@ -200,8 +205,9 @@ impl Tables {
         let names_pack = zar_logs_namespack::build(&so, &loc_xml, &enums, &guid_to_path)?;
         let skills = zar_logs_namespack::skill_rows(&so, &loc_xml, &enums, &guid_to_path)?;
         let notes = zar_logs_namespack::check(&so, &enums);
+        let enhancement_numbers = zar_logs_namespack::enhancement_numbers(&so, &enums);
         so.retain(|class, _| keep.contains(&class.as_str()) || class == zar_logs_gearcalc::GAME_RUNNER);
-        Ok(Tables { definitions: so, loc_xml, enums, code_constants, guids, skills, names: names_pack, notes })
+        Ok(Tables { definitions: so, loc_xml, enums, code_constants, guids, skills, names: names_pack, notes, enhancement_numbers })
     }
 
     /// The tables as one JSON document (the names pack is stored separately, as its own file).
@@ -213,6 +219,7 @@ impl Tables {
             "code_constants": self.code_constants,
             "guids": self.guids,
             "notes": self.notes,
+            "enhancement_numbers": self.enhancement_numbers,
             "skills": { "columns": SkillRow::COLUMNS, "rows": self.skills.iter().map(|r| r.cells().to_vec()).collect::<Vec<_>>() },
         })
     }
@@ -234,6 +241,7 @@ impl Tables {
         Ok(Tables { definitions, loc_xml: v["loc_xml"].as_str().ok_or("tables: no localisation text")?.to_string(),
             enums: v["enums"].take(), code_constants: v["code_constants"].take(),
             notes: v["notes"].as_array().into_iter().flatten().filter_map(|n| n.as_str().map(str::to_string)).collect(),
+            enhancement_numbers: v["enhancement_numbers"].as_object().cloned().unwrap_or_default(),
             guids: v["guids"].as_object().cloned().unwrap_or_default(), skills, names })
     }
 }
@@ -256,6 +264,10 @@ pub struct BuildData {
     mod_types: Vec<String>,
     damage_types: Vec<String>,
     deployables: Vec<String>,
+    /// enhancement asset name -> per description parameter -> its number by mod quality
+    enhancement_numbers: Map<String, Value>,
+    /// value of `AbilityDescriptionParameterSource.BonusParameter`
+    from_bonus: Option<i64>,
 }
 
 /// Adds the damage types that an armour definition carries a rating for, wherever in the object the ratings sit.
@@ -304,7 +316,8 @@ impl BuildData {
         Ok(BuildData { gear, skills: t.skills.clone(), row_by_id, loc, classes, defs, icons,
             qualities: members(&t.enums, "ItemQuality"), gear_types: members(&t.enums, "GearType"),
             mod_types: members(&t.enums, "GearModType"), damage_types: members(&t.enums, "DamageType"),
-            deployables: members(&t.enums, "DeployableCategory") })
+            deployables: members(&t.enums, "DeployableCategory"), enhancement_numbers: t.enhancement_numbers.clone(),
+            from_bonus: t.enums["AbilityDescriptionParameterSource"][FROM_BONUS].as_i64() })
     }
 
     /// Straight from the installed game (reads its files). Returns the tables too, for a caller that stores them.
@@ -417,17 +430,13 @@ impl BuildData {
                 name = pretty(&enh.replace("ModEnhancement_", ""));
             }
             let mut desc = d.map(|d| self.text(s(d, "description"))).unwrap_or_default();
-            if let (false, Some(d)) = (desc.is_empty(), d) {
-                // "{0}% damage bonus ..." with one value per quality the enhancement can have
-                let vals: Vec<String> = d.get("descriptionParameters").and_then(Value::as_array).into_iter().flatten().map(|prm| {
-                    let ranks = prm.get("manualRankValues").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
-                    let at = (q - i(d, "availableFromQuality")).min(ranks.len() as i64 - 1).max(0) as usize;
-                    ranks.get(at).and_then(Value::as_f64).map(|v| num(v, 2)).unwrap_or_else(|| "?".into())
-                }).collect();
-                if !vals.is_empty() {
-                    if let Some(filled) = fill(&desc, &vals) {
-                        desc = filled;
-                    }
+            // "{0}% damage bonus ...": the number for the quality of the mod it sits on
+            let vals: Vec<String> = self.enhancement_numbers.get(enh).and_then(Value::as_array).into_iter().flatten().map(|by_quality| {
+                usize::try_from(q).ok().and_then(|at| by_quality.get(at)).and_then(Value::as_f64).map(|v| num(v, 2)).unwrap_or_else(|| "?".into())
+            }).collect();
+            if !vals.is_empty() {
+                if let Some(filled) = fill(&desc, &vals) {
+                    desc = filled;
                 }
             }
             out.insert("enh".into(), json!({ "name": name, "desc": desc, "icon": d.map(|d| self.icon(d.get("icon"))).unwrap_or(Value::Null) }));
@@ -599,10 +608,36 @@ impl BuildData {
             let picons: HashMap<&str, &Value> = ["abilityUpgrades", "abilityEnhancements"].iter()
                 .flat_map(|k| ad.and_then(|d| d.get(*k)).and_then(Value::as_array).into_iter().flatten())
                 .filter_map(|x| Some((x.get("name")?.as_str()?, x.get("icon")?))).collect();
+            let level = i(info, "level");
             let perk = |pid: &str, kind: &str| {
                 let r = self.row(&format!("{aid}/{pid}"));
+                let mut desc = r.map(|r| r.description.clone()).unwrap_or_default();
+                // A number that grows with the player's level was left open in the table: `{n}`. It is a parameter of
+                // one of the entry's bonuses at this player's level, times `multiplier`, plus `offset`.
+                let entry = ["abilityUpgrades", "abilityEnhancements"].iter()
+                    .flat_map(|k| ad.and_then(|d| d.get(*k)).and_then(Value::as_array).into_iter().flatten()).find(|x| s(x, "name") == pid);
+                if let (true, Some(entry)) = (desc.contains('{'), entry) {
+                    let number = |v: &Value, key: &str| v.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+                    let vals: Vec<String> = entry.get("descriptionParameters").and_then(Value::as_array).into_iter().flatten().map(|prm| {
+                        let value = || {
+                            if enum_field(prm, "source") != self.from_bonus {
+                                return None;
+                            }
+                            let bonus = entry.get("bonuses")?.as_array()?.get(usize::try_from(i(prm, "bonusIndex")).ok()?)?;
+                            let wanted = enum_field(prm, "paramType");
+                            // the game takes 0 for a bonus without a parameter of the wanted type
+                            let of_bonus = bonus.get("parameters")?.as_array()?.iter().find(|p| enum_field(p, "parameterType") == wanted)
+                                .map_or(0.0, |p| zar_logs_namespack::upgrade_parameter_at_level(p, level));
+                            Some(of_bonus * number(prm, "multiplier") + number(prm, "offset"))
+                        };
+                        value().map(|v| num(v, 2)).unwrap_or_else(|| "?".into())
+                    }).collect();
+                    if let Some(filled) = fill(&desc, &vals) {
+                        desc = filled;
+                    }
+                }
                 json!({ "name": r.map(|r| r.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| pretty(pid)), "kind": kind,
-                        "desc": r.map(|r| r.description.as_str()).unwrap_or(""), "icon": self.icon(picons.get(pid).copied()) })
+                        "desc": desc, "icon": self.icon(picons.get(pid).copied()) })
             };
             let mut perks: Vec<Value> = upgrades.get(aid).and_then(|v| v.as_array()).into_iter().flatten()
                 .filter_map(Value::as_str).filter(|x| !x.is_empty()).map(|x| perk(x, "Upgrade")).collect();

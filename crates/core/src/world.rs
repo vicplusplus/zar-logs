@@ -62,6 +62,8 @@ struct Offsets {
     rt: Runtime,
     wc: St, b: St, w: St, a: St, e: St, ss: St, sg: St, bm: St, lm: St, lb: St, bp: St, pi: St, lg: St, lgm: St,
     em: St, sp: St, up: St, en: St, nullable: St, hdr: St, ged: St, ed: St,
+    /// the loaded level (a game build without the class leaves the level's type unknown)
+    lv: Option<St>,
     /// bytes per row of the damage-resistance and effect-resistance tables
     res_row: usize, eres_row: usize,
 }
@@ -81,7 +83,8 @@ impl Offsets {
             lm: c("LevelMode"), lb: c("WorldLoadDataBuilder"), bp: c("WorldDataBuildParams"), pi: c("PlayerInfo"), lg: c("LoadoutGear"),
             lgm: c("LoadoutGearMod"), em: c("EnemyModDefinitionSO"), sp: c("SkillPoint"), up: c("AbilityUpgradesApplied"),
             en: c("AbilityEnhancements"), nullable: c("Nullable<BuildDataResult>"), hdr: c("LoadHeader"), ged: c("GameEntityData"),
-            ed: c("EnemyData"), res_row: l.st("DamageResistanceData").size(), eres_row: l.st("EffectResistanceData").size(),
+            ed: c("EnemyData"), lv: l.try_st("Level").cloned(),
+            res_row: l.st("DamageResistanceData").size(), eres_row: l.st("EffectResistanceData").size(),
         }
     }
 }
@@ -261,8 +264,15 @@ fn defs_job(o: &Offsets, m: &mut dyn Mem, wc: u64, blob: u64) -> Option<Defs> {
     // the text a field of an object points at
     let text_at = |m: &mut dyn Mem, obj: u64, field: usize| { let t = m.u64(obj + field as u64); mstr(rt, m, t, MAX_TEXT) };
     let lm = ptr("levelMode");
+    // the level object says what it is itself (hub, mission, boss raid): a story mission has no mode, like the hub
+    let level_type = match (&o.lv, o.b.has("level")) {
+        (Some(lv), true) if lv.has("levelType") => Some(ptr("level")).filter(|p| *p != 0)
+            .and_then(|p| m.read(p + lv.o("levelType") as u64, 1)).map(|b| b[0]),
+        _ => None,
+    };
     let mut rec = Defs {
         level: mstr(rt, m, ptr("levelId"), MAX_TEXT),
+        level_type,
         mode: mstr(rt, m, ptr("modeId"), MAX_TEXT),
         difficulty: head[o.b.o("levelDifficulty")],
         modifier: head[o.b.o("levelModifier")],

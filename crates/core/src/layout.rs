@@ -12,7 +12,7 @@ use std::time::UNIX_EPOCH;
 use serde_json::Value;
 
 /// The layout version this code was written against (`VERSION` in zarmeter/layout.py).
-pub const VERSION: i64 = 11;
+pub const VERSION: i64 = 12;
 
 /// Field offsets of one struct.
 #[derive(Clone, Debug)]

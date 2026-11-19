@@ -22,7 +22,7 @@ zar-logs-namespack = { path = "../crates/namespack" }
 zar-logs-unity = { path = "../crates/unity" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs"] }
 
 [features]
 # set by the Tauri CLI for release bundles: serve the embedded page instead of a dev server

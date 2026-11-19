@@ -32,7 +32,10 @@
 //!   from memory. An entry has the asset `name`, a readable `pretty` name made from it, the localisation key of
 //!   the `title` where the class has one, and for sets the `setType` (1 buff, 2 debuff).
 //! * `levels` (`LevelDescriptorSO`) and `modes` (`LevelMode`): lower-case asset name -> title key, to name a
-//!   mission from the scene and mode the game reports.
+//!   mission from the scene and mode the game reports. A level also has its `scene`: the path of the scene asset
+//!   it points at, which is the level id the game reports.
+//! * `missions` (`CampaignMissionSO`): the story missions and prologues, each with its title key and `scene`.
+//!   They are levels without a descriptor and without a mode.
 //! * `classes` (`PlayerClassDefinitionSO`): lower-case `className` -> the class's English title.
 //! * `enhancements` (`GearModEnhancementDefinitionSO`): asset name and title key of the unique gear mods, the last
 //!   place an effect is looked up when nothing else claims it.
@@ -52,11 +55,20 @@ mod bonus;
 mod check;
 mod describe;
 mod dump;
+mod enhancements;
 mod fmt;
 mod loc;
 mod skills;
 
 pub use dump::parse_dump;
+
+/// What a parameter of an ability upgrade's or enhancement's bonus is worth for a player at `level`.
+pub fn upgrade_parameter_at_level(parameter: &Value, level: i64) -> f64 { bonus::of_upgrade(parameter, level) }
+
+/// The numbers in the descriptions of the unique gear mods, per quality of the mod: `{enhancement asset name:
+/// [one list per description parameter, indexed by quality; null where the number cannot be told]}`. `so` needs
+/// `GearModEnhancementDefinitionSO` and `StatusEffectSetDefinitionSO`, `enums` those of [`ENUMS`].
+pub fn enhancement_numbers(so: &HashMap<String, Obj>, enums: &Value) -> Map<String, Value> { enhancements::numbers(so, enums) }
 pub use skills::SkillRow;
 
 use std::collections::HashMap;
@@ -68,7 +80,7 @@ use zar_logs_core::names::pretty;
 type Obj = Map<String, Value>;
 
 /// Version of the pack's format, written as its `version`.
-pub const VERSION: u64 = 1;
+pub const VERSION: u64 = 2;
 
 /// Every ScriptableObject class [`build`] and [`skill_rows`] need: the nine the pack's sections and the skill
 /// rows are made from, `AdditionalMovementContactDefinitionSO` and `Currency` because skill data refers to their
@@ -82,6 +94,7 @@ pub const CLASSES: &[&str] = &[
     "StatusEffectSetDefinitionSO",
     "LevelDescriptorSO",
     "LevelMode",
+    "CampaignMissionSO",
     "GearModEnhancementDefinitionSO",
     "PlayerClassDefinitionSO",
     "PassiveSkillDefinitionSO",
@@ -115,6 +128,9 @@ pub const ENUMS: &[&str] = &[
     "AbilityActivationBehaviour",
     "BehaviourConditionsCheckType",
     "PassiveSkillDescriptionBonusType",
+    "AbilityDescriptionParameterSource",
+    "StatusEffectSetDurationMode",
+    "ItemQuality",
 ];
 
 /// The game's identity hash of an asset: CRC-32 of its name. Names are ASCII in practice; the reference hashes the
@@ -265,8 +281,13 @@ pub fn build(
         .unwrap_or("");
     let skills = skills::rows(so, &texts.raw, enums, guid_to_path)?;
 
+    // the scene asset a definition's field points at, as the path the catalog gives for it
+    let scene = |o: &Obj, field: &str| o.get(field).and_then(|r| r.get("m_AssetGUID")).and_then(Value::as_str)
+        .and_then(guid_to_path).unwrap_or_default();
     let levels: Vec<Value> = by_lower_name(so, "LevelDescriptorSO").into_iter()
-        .map(|(key, o)| json!({ "key": key, "name": name_of(o), "title": title_key(o) })).collect();
+        .map(|(key, o)| json!({ "key": key, "name": name_of(o), "title": title_key(o), "scene": scene(o, "scene") })).collect();
+    let missions: Vec<Value> = by_lower_name(so, "CampaignMissionSO").into_iter()
+        .map(|(key, o)| json!({ "key": key, "name": name_of(o), "title": title_key(o), "scene": scene(o, "level") })).collect();
     let modes: Obj = by_lower_name(so, "LevelMode").into_iter().map(|(key, o)| (key, title_key(o))).collect();
     let mut classes = Map::new();
     for (_, o) in assets(so, "PlayerClassDefinitionSO") {
@@ -289,6 +310,7 @@ pub fn build(
     pack.insert("entities".into(), table(so, "EntityDefinitionSO", &[]));
     pack.insert("sets".into(), table(so, "StatusEffectSetDefinitionSO", &["setType"]));
     pack.insert("levels".into(), Value::Array(levels));
+    pack.insert("missions".into(), Value::Array(missions));
     pack.insert("modes".into(), Value::Object(modes));
     pack.insert("classes".into(), Value::Object(classes));
     pack.insert("enhancements".into(), Value::Array(enhancements));

@@ -75,7 +75,13 @@ AI's own scripts (`zdis.py`, `zraw.py`, `zxref.py`). Functions that were read in
 table), `GameHud::UpdateChat`, `HashedString.Get` (ids are CRC-32 of asset names),
 `WorldLoadDataBuilder.WriteIdentityHashArrays`, and for the gear maths `BonusHelpers::ApplyBonusToDamageInfo`,
 `ApplyBonusToWeapon`, `UpgradeBehaviour`, `BuildPlayerWeaponInternal`,
-`PassiveBonusDefinition::TranslateModPointToRealBonus`, `Gear.GearFitsEnhancementRequirements`.
+`PassiveBonusDefinition::TranslateModPointToRealBonus`, `Gear.GearFitsEnhancementRequirements`. After the first
+release, for the reports that followed it: `GameRunner::GetCurrentLevelType` (how the game itself tells the hub from
+a mission), `GameRunner::HandleGameEndRewards` (where the result data and the experience gained are written),
+`AbilityDescriptionParameterHelper::GetDescriptionParameter`,
+`GearModEnhancementDefinitionSO::GetDescriptionParameter`, `AbilityUpgradeBonusDefinition::GetBonus` and
+`GetParameterBonus`, `PassiveBonusDefinition::GetParameterBonus` and `BonusEvaluationContext::ForModEnhancement`
+(how the numbers in upgrade and enhancement descriptions are worked out).
 
 **Disassembly of the game's native simulation library** (`sas-5-native.dll`, no symbols), with capstone through
 `znative.py`. The library was only ever read as a file, never loaded or executed. This gave the layout of the
@@ -93,7 +99,14 @@ catalog, sprites and textures (DXT1/DXT5 decoding; BC7 is not decoded).
 
 **Live, read-only probing.** A few things were settled by reading the running game while the developer played,
 with the same read-only access as above: the meaning of the mission-result fields, the layout of the resistance
-tables (232 enemy definitions on that day), and checks of the Rust reader.
+tables (232 enemy definitions on that day), and checks of the Rust reader. After the first release a development
+build was run next to the developer's own play, again read-only and writing to a scratch folder, and recorded a
+story mission from start to result screen: that is the check that story missions are recognised and that the
+experience gained is read.
+
+**Level scenes.** Whether a level is the hub or a mission was confirmed for all thirteen level scenes by reading
+the `Level` component of each scene's asset bundle with UnityPy (research tooling, not part of this repository);
+the app reads the same field from the loaded level in memory.
 
 **Things no file states**, taken as assumptions: the member order of the C++ `std::vector` in the native library
 (Microsoft's ABI; only its size is confirmed by the metadata) and that the resistance tables hold 32-bit floats.
@@ -176,3 +189,4 @@ Logs stay on your machine unless you share them.
 | 16 to 17 Nov | Rust + Tauri port, in this repository: core, app, layout generator, asset readers, names, gear maths, build viewer. |
 | 17 Nov | Rarity odds spreadsheet (separate session). |
 | 18 Nov | Everything derived per game version, nothing hard-coded; mod damage corrected to flat; explosion row; hub fix; preparation for publishing. |
+| 18 Nov, after releases 0.1.0 and 0.1.1 | First reports from players: story missions and prologues recorded (the hub is now told apart by the level's own type); damage done by enemies no longer credited to players; damage to structures kept apart and left out by default; description numbers; experience gained; export and import of logs. |

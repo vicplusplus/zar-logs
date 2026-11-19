@@ -102,7 +102,8 @@ struct Off {
     /// a native vector embedded in a struct: where its first-element and past-the-end pointers sit
     vec_begin: usize, vec_end: usize,
     // GameRunner, GameResultData
-    gr_cur: u64, gr_result: u64, rd_valid: usize, rd_time: usize, rd_objective: usize, rd_leave: usize, rd_window: usize,
+    gr_cur: u64, gr_result: u64, rd_valid: usize, rd_time: usize, rd_objective: usize, rd_leave: usize, rd_xp: Option<usize>,
+    rd_window: usize,
     /// bits set in the class slot while the runtime has not resolved it yet
     slot_unresolved: u64,
     // GameEventType
@@ -186,7 +187,8 @@ impl Off {
             vec_begin: l.rt("native_vector", "begin"), vec_end: l.rt("native_vector", "end"),
             gr_cur: gr.o("clientUpdateResult") as u64, gr_result: gr.o("resultData") as u64,
             rd_valid: rd.o("valid"), rd_time: rd.o("time"), rd_objective: rd.o("objectiveResult"), rd_leave: rd.o("leaveLevelReason"),
-            rd_window: rd.o("leaveLevelReason") + four,
+            rd_xp: rd.has("totalXpGained").then(|| rd.o("totalXpGained")),
+            rd_window: (rd.o("leaveLevelReason") + four).max(if rd.has("totalXpGained") { rd.o("totalXpGained") + std::mem::size_of::<u64>() } else { 0 }),
             slot_unresolved: l.rt("typeinfo_slot", "unresolved_mask") as u64,
             t_hit: et("Hit"), t_heal: et("Heal"), t_abil: et("ActivateAbility"), t_gk: et("GroupedKills"),
             t_fire: et("WeaponFire"), t_reload: et("WeaponReload"), t_reloadb: et("WeaponReloadBegin"),
@@ -478,12 +480,13 @@ impl Decoder {
         out.push(Rec::Sample(Sample { wall, t, match_id, clients, ents, res: self.result(m) }));
     }
 
-    /// GameRunner.resultData: (valid, time, objective result, leave reason). `time` is the mission time the game
-    /// itself shows on the result screen: world time (intro and outro included) at the moment the level is left.
+    /// GameRunner.resultData: (valid, time, objective result, leave reason, experience gained). `time` is the
+    /// mission time the game itself shows on the result screen: world time (intro and outro included) at the moment
+    /// the level is left. The experience is what the result screen adds up for the local player.
     fn result(&self, m: &mut dyn Mem) -> Option<GameResult> {
         let o = &self.o;
         let b = m.read(self.gr + o.gr_result, o.rd_window)?;
-        Some((b[o.rd_valid], le_f64(&b, o.rd_time), b[o.rd_objective], le_i32(&b, o.rd_leave)))
+        Some((b[o.rd_valid], le_f64(&b, o.rd_time), b[o.rd_objective], le_i32(&b, o.rd_leave), o.rd_xp.map_or(0, |at| le_u64(&b, at))))
     }
 
     /// Player entities: health, shield, status effects, ability slots, weapons, the game's own damage total.

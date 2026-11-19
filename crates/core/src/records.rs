@@ -19,8 +19,9 @@ where D: serde::Deserializer<'de>, K: std::str::FromStr + Ord, V: Deserialize<'d
         .collect()).transpose()
 }
 
-/// GameRunner.resultData: (valid, time, objective result, leave reason).
-pub type GameResult = (u8, f64, u8, i32);
+/// GameRunner.resultData: (valid, time, objective result, leave reason, experience gained). The experience is the
+/// local player's for the mission, as the result screen shows it; 0 while the game has not filled it in.
+pub type GameResult = (u8, f64, u8, i32, u64);
 /// One status effect on an entity: (instance id, set hash, effect type, apply time, duration, state, suspended,
 /// set level, giver entity id, attributed attack type, attributed attack hash).
 pub type Effect = (u16, u32, u8, f64, f64, u8, u8, u8, u32, u8, u32);
@@ -237,6 +238,9 @@ pub struct Defense {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Defs {
     pub level: String,
+    /// the level's own kind (LevelType: hub, mission, boss raid); None when this game build does not say
+    #[serde(default)]
+    pub level_type: Option<u8>,
     pub mode: String,
     pub difficulty: u8,
     pub modifier: u8,

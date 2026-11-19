@@ -26,7 +26,7 @@ use zar_logs_core::layout::Layout;
 use zar_logs_core::paths::{game_version, GameVersion};
 
 /// Bump when this app changes what it writes into a version folder: folders made by an older app are made again.
-const GENERATOR: u64 = 4;
+const GENERATOR: u64 = 5;
 /// How many game versions' folders are kept.
 const KEEP_VERSIONS: usize = 3;
 

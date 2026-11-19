@@ -6,6 +6,12 @@
 //!   /api/live, /api/stream  capture status and the mission in progress (once, or as server-sent events)
 //!   /overlay                the in-game overlay's page        /api/overlay/toggle   show / hide it (POST)
 //!   /api/open/<name>        open one of the links of `LINKS` in the default browser (POST)
+//!   /api/encounter/<id>/export, /reveal    save a copy where the user says; show the file in Explorer (POST)
+//!   /api/import             add logs from files the user picks (POST)
+//!   /api/structures/on, /off    whether damage to structures is counted in what the pages show (POST)
+//!
+//! Everything that changes or does something is a POST or DELETE and must carry the header `X-Zar-Logs`: a page
+//! of some other site open in a browser cannot send that to this server, so only the app's own pages can ask.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -48,6 +54,9 @@ fn open_in_browser(url: &str) -> bool {
 #[cfg(not(windows))]
 fn open_in_browser(_url: &str) -> bool { false }
 
+/// The header the app's own pages send with every request that changes or does something.
+const OWN_PAGE: &str = "X-Zar-Logs";
+
 fn header(k: &str, v: &str) -> Header { Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("static header") }
 
 fn text(status: u16, ctype: &str, body: impl Into<Vec<u8>>) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -81,6 +90,12 @@ fn handle(app: &App, req: Request) {
     }
     let path = req.url().split('?').next().unwrap_or("").to_string();
     let method = req.method().clone();
+    if method != Method::Get && !req.headers().iter().any(|h| h.field.equiv(OWN_PAGE)) {
+        let _ = req.respond(text(403, "text/plain", "not from the app's own page"));
+        return;
+    }
+    // "/api/encounter/<id>/<action>"
+    let action = |name: &str| path.strip_prefix("/api/encounter/").and_then(|rest| rest.strip_suffix(name)).and_then(|id| id.strip_suffix('/'));
     let resp = match (&method, path.as_str()) {
         (Method::Get, "/") => text(200, "text/html; charset=utf-8", INDEX),
         (Method::Get, "/static/app.js") => text(200, "text/javascript; charset=utf-8", APP_JS),
@@ -94,6 +109,11 @@ fn handle(app: &App, req: Request) {
             }
         }
         (Method::Post, "/api/overlay/toggle") => json(&serde_json::json!({ "overlay": app.set_overlay(!app.overlay_on()) })),
+        (Method::Post, "/api/structures/on") => json(&serde_json::json!({ "structures": app.set_structures(true) })),
+        (Method::Post, "/api/structures/off") => json(&serde_json::json!({ "structures": app.set_structures(false) })),
+        (Method::Post, "/api/import") => json(&app.import()),
+        (Method::Post, _) if action("export").is_some() => json(&app.export(action("export").unwrap_or(""))),
+        (Method::Post, _) if action("reveal").is_some() => json(&app.reveal(action("reveal").unwrap_or(""))),
         (Method::Get, "/api/encounters") => json(&app.encounters()),
         (Method::Get, "/api/live") => json(&app.live()),
         (Method::Get, "/api/stream") => return stream(app, req),

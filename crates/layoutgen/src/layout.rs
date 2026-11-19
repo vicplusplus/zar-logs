@@ -27,7 +27,7 @@ use crate::pe::{Module, Pe};
 use crate::x86;
 
 /// Format version of the exported document; readers reject any other.
-pub const VERSION: i64 = 11;
+pub const VERSION: i64 = 12;
 
 /// Namespace of the structs shared with the game's native simulation; dropped from exported names.
 const NBI: &str = "NativeBuildInterop.";
@@ -67,6 +67,8 @@ const CLASSES: &[&str] = &[
     "Assets.DataDefinitions.EntityDefinitionSO", "StatusEffectSetDefinitionSO", "StatGroupKills",
     "BossModDefinitionSO", "EnemyModDefinitionSO", "LevelMode", "WorldLoadDataBuilder", "PlayerInfo",
     "WorldDataBuildParams", "SkillPoint", "AbilityUpgradesApplied", "AbilityEnhancements",
+    // since version 12: the loaded level itself, which says whether it is the hub or a mission
+    "NinjaKiwi.ZombieAssault.LevelEditor.Level",
 ];
 
 /// The enums of version 10, first and in this order so that old and new documents line up. (`Collection` never
@@ -82,7 +84,7 @@ const ENUMS: &[&str] = &[
 
 /// Enums wanted by name wherever they live (the simulation's namespace is exported whole; these are for the
 /// ones outside it).
-const EXTRA_ENUMS: &[&str] = &["ItemQuality", "GearType", "WeaponCategory", "LevelDifficulty"];
+const EXTRA_ENUMS: &[&str] = &["ItemQuality", "GearType", "WeaponCategory", "LevelDifficulty", "LevelType"];
 
 /// Size (= alignment) of the primitive element types: bool, char, the integers, float, double, IntPtr, UIntPtr.
 fn primitive_size(ty: u8) -> Option<i64> {

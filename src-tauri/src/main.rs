@@ -12,10 +12,13 @@
 //!                   (one folder per game version: layout, tables, names, pictures; see gamedata.rs)
 //!   ZARLOGS_PORT    port of the local server         config "port"    default 5175 (any free port when taken)
 //!   ZAR_GAME_DIR    the game's folder                default: found (running game, Steam libraries)
+//! config.json also keeps what the pages set: "overlay" (shown, position) and "structures" (count damage to
+//! structures in the figures shown; off by default).
 //! `--headless` runs without windows; `--prepare-only` only reads the game's files into the cache and exits.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dialogs;
 mod gamedata;
 mod logs;
 mod server;
@@ -29,7 +32,7 @@ use tauri::Manager;
 use zar_logs_core::capture::Decoder;
 use zar_logs_core::mem::Live;
 use zar_logs_core::names::Resolver;
-use zar_logs_core::session::Tracker;
+use zar_logs_core::session::{self, Tracker};
 use zar_logs_core::store;
 
 pub struct App {
@@ -59,12 +62,17 @@ impl App {
         // the hub is a loaded world but not a mission: it is named as the place the player is in, nothing more
         let place = t.cur.as_ref().and_then(|c| c.hub_name()).map(str::to_string);
         let mission = t.cur.as_ref().filter(|c| c.is_mission());
-        let enc = match mission {
+        let mut enc = match mission {
             Some(c) if c.server_hits > 0 || last.is_none() => Some(c.live()),
             cur => last.clone().or_else(|| cur.map(|c| c.live())),
         };
+        let structures = self.structures_on();
+        if let Some(e) = &mut enc {
+            session::view(e, structures);
+        }
         json!({ "status": *self.status.lock().unwrap(), "version": self.store.version(),
                 "capture": *self.capture.lock().unwrap(), "encounter": enc, "place": place, "overlay": self.overlay_on(),
+                "structures": structures,
                 "prep": *self.prep.lock().unwrap(),
                 // for the About page
                 "app": { "version": env!("CARGO_PKG_VERSION"), "repository": env!("CARGO_PKG_REPOSITORY"),
@@ -81,6 +89,8 @@ impl App {
             self.store.decorate(&mut row);
             rows.insert(0, row);
         }
+        let structures = self.structures_on();
+        rows.iter_mut().for_each(|row| session::view(row, structures));
         Value::Array(rows)
     }
 
@@ -95,7 +105,41 @@ impl App {
         };
         let mut d = live.or_else(|| self.store.detail(id))?;
         self.render_builds(&mut d);
+        session::view(&mut d, self.structures_on());
         Some(d)
+    }
+
+    // ---- sharing logs ----
+    /// The viewer's window, for a dialog to belong to (0 when there is none).
+    fn owner(&self) -> isize {
+        self.handle.get().and_then(|h| h.get_webview_window("main")).and_then(|w| w.hwnd().ok()).map_or(0, |h| h.0 as isize)
+    }
+
+    /// Asks where to save a copy of a log and saves it there.
+    pub fn export(&self, id: &str) -> Value {
+        let Some(from) = self.store.path_of(id) else { return json!({ "ok": false, "error": "that log is no longer there" }) };
+        let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        match dialogs::save_as(self.owner(), &name) {
+            None => json!({ "ok": false, "cancelled": true }),
+            Some(to) => match self.store.export(id, &to) {
+                Ok(()) => json!({ "ok": true, "path": to.display().to_string() }),
+                Err(e) => json!({ "ok": false, "error": e }),
+            },
+        }
+    }
+
+    /// Asks which log files to add, and adds them.
+    pub fn import(&self) -> Value {
+        let files = dialogs::open_many(self.owner());
+        if files.is_empty() {
+            return json!({ "cancelled": true });
+        }
+        self.store.import(&files)
+    }
+
+    /// Shows a log's file in Explorer.
+    pub fn reveal(&self, id: &str) -> Value {
+        json!({ "ok": self.store.path_of(id).is_some_and(|path| dialogs::reveal(&path)) })
     }
 
     /// A log whose builds are still raw loadouts (recorded before the game's data was read, or by a version of
@@ -129,6 +173,15 @@ impl App {
         let _ = std::fs::write(self.data.join("config.json"), text);
     }
     pub fn overlay_on(&self) -> bool { self.config.lock().unwrap()["overlay"]["enabled"].as_bool().unwrap_or(true) }
+
+    /// Whether damage to structures (crates, pods, barrels, level geometry) is counted in the figures shown.
+    /// Off unless the user turns it on; both sets of figures are in every log, so this only changes the view.
+    pub fn structures_on(&self) -> bool { self.config.lock().unwrap()["structures"].as_bool().unwrap_or(false) }
+    pub fn set_structures(&self, on: bool) -> bool {
+        self.config.lock().unwrap()["structures"] = json!(on);
+        self.save_config();
+        on
+    }
 
     /// Show or hide the overlay window and remember the choice.
     pub fn set_overlay(&self, on: bool) -> bool {

@@ -83,7 +83,9 @@ What is read, and from where:
 | What | Source |
 |---|---|
 | Field offsets, struct sizes and strides, enum members and values, string / array / list layout | IL2CPP metadata and `GameAssembly.dll` (`crates/layoutgen`) |
-| Weapons, mods, enhancements, armour, abilities, skills, classes, levels | the definitions in the asset bundles (`crates/unity`) |
+| Weapons, mods, enhancements, armour, abilities, skills, classes, levels, story missions | the definitions in the asset bundles (`crates/unity`) |
+| Whether a level is the hub or a mission | the loaded level's own type, read from the running game (a story mission has no mode, like the hub) |
+| The numbers in upgrade and enhancement descriptions | the definitions, combined the way the game's own description routines combine them |
 | Enemy health, shields and resistances, difficulty multipliers | the running mission's own data, per mission |
 | Every label the page shows for a game thing (quality, damage type, slot, stat, difficulty) | the game's localisation text, by enum member name |
 | Four factors of the mod maths that exist only as machine code | read from the code of that game version, with the evidence stored next to the values |
@@ -118,6 +120,37 @@ All of it stays on your machine, in the cache folder. None of it is part of this
 - The full walk of the entity list (finding players and bosses) runs once a second, because it is one read per
   entity. The world's tables (names, defences, loadouts) are read once per mission, on a separate thread.
 
+## What counts as a player's damage
+
+The game attributes every hit to a client. That attribution is how it credits kills, and it is wider than "damage
+this player dealt", so the encounter model (`crates/core/src/session.rs`) narrows it:
+
+- **Counted**: hits by a weapon or an ability (turrets and other deployables are abilities), and by things the
+  player set off that are not enemies (an explosive barrel).
+- **Not counted**: hits whose source definition is an enemy. A Detonator's blast among other zombies and a
+  Multiplier clawing a turret both arrive credited to a player; they are counted in `stats.enemy_hits` and nowhere
+  else. A source the mission's tables do not have yet is held for up to two seconds of game time while the tables
+  are read again, then decided.
+- **Counted apart**: hits on anything that is not an enemy (crates, pods, barrels, level geometry, a turret caught
+  in the player's own blast). Every figure is kept twice, without and with these; a log stores the first in place
+  and the second under `with_structures`, and `session::view` turns a log, a list row or a live payload into
+  whichever the user asked for. So the switch works on missions already recorded.
+
+The game's own damage counter (shown in the capture note under a log) counts weapon damage with structures and
+nothing from abilities or deployables. It is a check on the decoder, not the figure shown.
+
+## Logs
+
+One file per mission in the logs folder, `enc-<id>_<map>_<mode>_<difficulty>.json.gz`: gzip-compressed JSON with
+`summary` (the list row), `detail` (everything the page shows) and `hits` (one row per counted hit). The id is the
+local start time; the rest of the name is for people. `index.json` is a cache of the summaries and is rebuilt from
+the files whenever they disagree. `detail.format` is the log format (`session::FORMAT`); a log of an older format
+is shown as recorded and is not converted.
+
+An imported log (`store::import`) is another person's file and is handled as untrusted: it must be a whole log
+with a usable id and a format this version knows, every rendered build in it is cut back to the raw loadout and
+rendered again from the local game data, and the page only ever loads pictures from the app's own cache.
+
 ## Diagnostics and tests
 
 ```
@@ -138,7 +171,13 @@ A build is rendered when the mission is recorded and saved with the log. A log t
 
 ## Known gaps
 
-- Windows only. Not signed, no installer, no automatic updates.
+- Windows only. Not signed, no automatic updates.
+- The export and import dialogs and "Show file" are thin wrappers over Windows' own dialogs and are not covered
+  by a test; what they call (`store::import`, copying a log) is.
+- Who gave a status effect is read (`giver_entity_id`) but only used to rule a teammate out. An effect the game
+  applies to everyone (the invulnerability at the end of a mission) is still attributed to a teammate's ability
+  when a teammate has an ability that applies the same effect set.
+- Descriptions: a number that is a mod-point parameter of an enhancement's bonus (Last Gasp) shows as `?`.
 - BC7-compressed textures are not decoded (no picture the app uses needs it today).
 - A weapon whose explosion is defined only on an entity it spawns gets no explosion row (none exists today).
 - Not yet confirmed in game: the shared pistol bonus applying to a pistol's explosion; a rocket's contact hit

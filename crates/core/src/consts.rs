@@ -49,6 +49,8 @@ pub struct Consts {
     pub entity_types: Vec<String>,
     /// LevelDifficulty member names, by value
     pub difficulties: Vec<String>,
+    /// LevelType.Hub: the level is the hub (Aegis Station), not a mission. None when this game build has no such enum.
+    pub lt_hub: Option<u8>,
 }
 
 /// Members that mark the end of an enum rather than name a value.
@@ -99,6 +101,7 @@ impl Consts {
             effect_categories: names_by_value(lay, "EffectCategory"),
             entity_types: names_by_value(lay, "GameEntityType"),
             difficulties: names_by_value(lay, "LevelDifficulty"),
+            lt_hub: lay.members("LevelType").iter().find(|(m, _)| m == "Hub").map(|(_, v)| *v as u8),
         }
     }
 
@@ -152,4 +155,25 @@ pub fn install(lay: &Layout) -> Arc<Consts> {
 /// The enum values in use. Panics when no layout has been loaded yet: nothing can be decoded or named before.
 pub fn get() -> Arc<Consts> {
     CURRENT.read().unwrap().clone().expect("no layout loaded: the game's enum values are not known yet")
+}
+
+/// Enum values for tests: made up, and deliberately not the game's. Nothing in this program may depend on what
+/// the real numbers are, so a test that passes with these says so.
+#[cfg(test)]
+pub fn install_for_tests() -> Arc<Consts> {
+    let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let c = Arc::new(Consts {
+        hit_final: 0x40, hit_crit: 0x02, hit_explosion: 0x100, hit_dodge: 0x08, hit_dot: 0x10,
+        src_server: 3, ws_ingame: 5, cs_running: 7, cs_ended: 9,
+        et_player: 4, et_enemy: 2, et_destructible: 1, flag_boss: 0x800,
+        fx_applied: 6, fx_trigger_only: 25, ab_active: 2, at_weapon: 5, at_ability: 6,
+        attack_types: names(&["", "", "", "", "Entity", "Weapon", "Ability"]),
+        damage_types: names(&["Physical", "Heat"]),
+        effect_categories: Vec::new(),
+        entity_types: names(&["", "Destructible", "Enemy", "Turret", "Player", "ExplosiveBarrel"]),
+        difficulties: names(&["", "Easy", "Hard"]),
+        lt_hub: Some(3),
+    });
+    *CURRENT.write().unwrap() = Some(c.clone());
+    c
 }

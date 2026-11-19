@@ -37,6 +37,14 @@ use serde_json::Value;
 
 use crate::bonus;
 use crate::describe::{items, named, ref_name, whole, Enums, Game, Obj, Scale, Seen, HEALTH_FACTOR, HEALTH_FACTOR_PER_MINUTE};
+
+/// Members of `AbilityDescriptionParameterSource`: where the number in an upgrade's description comes from.
+pub(crate) const FROM_BONUS: &str = "BonusParameter";
+const FROM_EFFECT_SET: &str = "StatusEffectSet";
+const FROM_MANUAL: &str = "ManualValue";
+
+/// An enum field as the dump writes it: `{"value": n}` or the bare number.
+fn enum_value(v: Option<&Value>) -> i128 { v.and_then(|x| x.get("value").and_then(whole).or_else(|| whole(x))).unwrap_or(0) }
 use crate::{fmt, truthy};
 
 /// One row of the class-skills table. Every field is the text of that column's cell; a cell that does not apply
@@ -343,6 +351,71 @@ impl<'a> Table<'a> {
         fmt::clean(&fill(&fmt::decode(template), &values))
     }
 
+    /// The value a status effect of kind `effect_type` has in the set that one of `bonus`'s behaviours applies:
+    /// the effect's field named after its type (`ResistanceModifier` -> `resistanceModifier`).
+    fn set_effect_value(&self, bonus: &Value, registry: &HashMap<i64, &Value>, effect_type: i128) -> Option<f64> {
+        let member = self.game.enums.effect_type_names.get(&effect_type)?;
+        let mut letters = member.chars();
+        let field = letters.next()?.to_lowercase().collect::<String>() + letters.as_str();
+        for list in ["additionalAbilityBehaviours", "additionalBehaviours"] {
+            for behaviour in Game::listed(bonus.get(list).unwrap_or(&Value::Null), registry) {
+                let Some(data) = behaviour.get("data") else { continue };
+                let Some(set) = data.get("set").and_then(Value::as_str).and_then(|reference| self.game.sets.get(ref_name(reference))) else { continue };
+                let levels = items(set.get("leveledSet"));
+                // the level of the set the behaviour applies; the first when it names none
+                let level = data.get("setLevel").and_then(Value::as_i64).unwrap_or(1).max(1) as usize - 1;
+                for leveled in levels.get(level).into_iter().chain(levels.iter()) {
+                    let effects = items(leveled.get("statusEffects")).iter().filter_map(|e| e.get("statusEffect"));
+                    let value = effects.filter(|e| enum_value(e.get("type")) == effect_type).find_map(|e| e.get(&field)?.as_f64());
+                    if value.is_some() {
+                        return value;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The description of an ability upgrade or enhancement with its numbers filled in, as the game does from
+    /// the entry's `descriptionParameters` (`AbilityDescriptionParameterHelper.GetDescriptionParameter`): a
+    /// status effect of the set one of its bonuses applies, times `multiplier`, plus `offset`; or a number given
+    /// outright, plus `offset`. A number that cannot be found shows as `?`.
+    ///
+    /// The third kind, a parameter of one of its bonuses, grows with the player's level. Its placeholder is left
+    /// in the text (as `{n}`), for whoever shows the description to a player of a known level to fill
+    /// (`upgrade_parameter_at_level`).
+    fn perk_description(&self, entry: &Obj, registry: &HashMap<i64, &Value>) -> String {
+        let template = self.text(entry, "description");
+        let parameters = items(entry.get("descriptionParameters"));
+        if parameters.is_empty() {
+            return fmt::clean(template);
+        }
+        let bonuses = items(entry.get("bonuses"));
+        let mut values: Vec<Shown> = Vec::new();
+        for parameter in parameters {
+            let number = |field: &str| parameter.get(field).and_then(Value::as_f64).unwrap_or(0.0);
+            let index = parameter.get("bonusIndex").and_then(Value::as_i64).unwrap_or(0);
+            let index = if index < 0 { index + bonuses.len() as i64 } else { index };
+            let bonus = usize::try_from(index).ok().and_then(|i| bonuses.get(i));
+            let found = match named(&self.game.enums.description_source, enum_value(parameter.get("source"))) {
+                FROM_MANUAL => Some(number("manualValue") + number("offset")),
+                FROM_EFFECT_SET => bonus.and_then(|b| self.set_effect_value(b, registry, enum_value(parameter.get("statusEffectType"))))
+                    .map(|v| v * number("multiplier") + number("offset")),
+                FROM_BONUS => {
+                    values.push(Shown::Text(format!("{{{}}}", values.len())));
+                    continue;
+                }
+                _ => None,
+            };
+            values.push(match found {
+                // single-precision noise off the product: 0.12 * 100 is 12
+                Some(v) => Shown::Number(fmt::round(v, 4)),
+                None => Shown::Text("?".into()),
+            });
+        }
+        fmt::clean(&fill(&fmt::decode(template), &values))
+    }
+
     fn skill_row(&mut self, owner: &Owner, class_entry: &Value) {
         let Some(name) = self.asset_name(class_entry.get("skillDef")) else { return };
         let Some(skill) = self.skills.get(name.as_str()).copied() else { return };
@@ -448,7 +521,7 @@ impl<'a> Table<'a> {
                 let only: Vec<String> = items(Some(&allowed)).iter()
                     .map(|class| ref_name(class.as_str().unwrap_or("None")).replace(&self.class_ending, "")).collect();
                 let entry_name = entry.get("name").and_then(Value::as_str).unwrap_or("");
-                let description = fmt::clean(self.text(entry, "description"));
+                let description = self.perk_description(entry, &registry);
                 rows.push(SkillRow {
                     cls: owner.cls.into(),
                     subclass: owner.subclass.into(),

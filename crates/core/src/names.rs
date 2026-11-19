@@ -93,6 +93,46 @@ pub fn pretty(name: &str) -> String {
 
 fn norm(s: &str) -> String { s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase() }
 
+/// A title without the game's inline markup: "Return [r]to Regen[/r]" -> "Return to Regen". A tag is a short word
+/// in square brackets, with a slash in front when it closes.
+pub fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        let tag = tail.find(']').map(|close| &tail[1..close]).filter(|tag| {
+            let word = tag.strip_prefix('/').unwrap_or(tag);
+            !word.is_empty() && word.len() <= 8 && word.chars().all(|c| c.is_ascii_alphabetic())
+        });
+        match tag {
+            Some(tag) => rest = &tail[tag.len() + 2..],
+            None => {
+                out.push('[');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A scene path as the same text however it was written: forward slashes, lower case.
+fn scene_key(path: &str) -> String { path.replace('\\', "/").to_lowercase() }
+
+/// Who did a hit, as far as its source definition tells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attacker {
+    /// a weapon or an ability: a player's own
+    Player,
+    /// an enemy: its attack or its blast, whoever the game credits it to
+    Enemy,
+    /// something that is neither (a barrel, a turret, an area) or names no definition
+    Other,
+    /// a definition this mission's tables do not have (yet)
+    Unknown,
+}
+
 #[derive(Clone, Debug, Default)]
 struct Asset {
     name: String,
@@ -131,6 +171,10 @@ pub struct OwnerCtx<'a> {
     pub skills: HashSet<String>,
     /// ability identity hash -> (asset, name) of the player's ability lanes
     pub by_hash: HashMap<u32, (&'a str, &'a str)>,
+    /// how many other players are in the mission
+    pub others: usize,
+    /// whether the loadout of any of them is known (`allies` is only complete then)
+    pub ally_builds: bool,
 }
 
 #[derive(Default)]
@@ -141,6 +185,8 @@ pub struct Resolver {
     off_entities: HashMap<u32, Asset>,
     off_sets: HashMap<u32, Asset>,
     levels: Vec<(String, String)>,
+    /// scene path (see `scene_key`) -> (title key, true for a story mission)
+    scenes: HashMap<String, (String, bool)>,
     modes: HashMap<String, String>,
     classes: HashMap<String, String>,
     enhancements: Vec<(String, String)>,
@@ -180,6 +226,11 @@ impl Resolver {
         r.off_entities = table(&v["entities"]);
         r.off_sets = table(&v["sets"]);
         r.levels = v["levels"].as_array().into_iter().flatten().map(|d| (s(&d["key"]), s(&d["title"]))).collect();
+        for (list, story) in [("levels", false), ("missions", true)] {
+            for d in v[list].as_array().into_iter().flatten().filter(|d| !s(&d["scene"]).is_empty()) {
+                r.scenes.insert(scene_key(&s(&d["scene"])), (s(&d["title"]), story));
+            }
+        }
         r.modes = v["modes"].as_object().into_iter().flatten().map(|(k, x)| (k.clone(), s(x))).collect();
         r.classes = v["classes"].as_object().into_iter().flatten().map(|(k, x)| (k.clone(), s(x))).collect();
         r.enhancements = v["enhancements"].as_array().into_iter().flatten().map(|d| (s(&d["name"]), s(&d["title"]))).collect();
@@ -320,6 +371,23 @@ impl Resolver {
     }
 
     pub fn is_boss(&self, hash: u32) -> bool { self.entities.get(&hash).is_some_and(|d| d.boss) }
+
+    /// Who did a hit with this attack type and source definition (see `Attacker`).
+    pub fn attacker(&self, attack_type: u8, hash: u32) -> Attacker {
+        let c = consts::get();
+        if attack_type == c.at_weapon || attack_type == c.at_ability {
+            return Attacker::Player;
+        }
+        if hash == 0 {
+            return Attacker::Other;
+        }
+        match self.enemy.get(&hash) {
+            Some(true) => Attacker::Enemy,
+            Some(false) => Attacker::Other,
+            None if self.weapons.contains_key(&hash) || self.abilities.contains_key(&hash) => Attacker::Player,
+            None => Attacker::Unknown,
+        }
+    }
     /// False only when the target is known not to be an enemy (prop, turret, ...).
     pub fn is_enemy(&self, hash: u32) -> bool { self.enemy.get(&hash).copied().unwrap_or(true) }
 
@@ -327,8 +395,21 @@ impl Resolver {
         self.classes.get(&cid.to_lowercase()).cloned().unwrap_or_else(|| if cid.is_empty() { String::new() } else { pretty(cid) })
     }
 
-    /// 'Assets/Levels/Operations/Op_Geode_Map.unity' -> 'Geode' title via the level descriptor whose name it contains.
-    fn level_name(&self, level_id: &str) -> String {
+    /// The level's title and whether it is a story mission. First by the scene itself: the level descriptor (an
+    /// operation's map) or campaign mission (story, prologue) whose scene this is. Without that (an older names
+    /// pack), 'Assets/Levels/Operations/Op_Geode_Map.unity' -> 'Geode' title via the level descriptor whose name
+    /// the file name contains, and last the file name made readable.
+    fn level_name(&self, level_id: &str) -> (String, bool) {
+        if let Some((title, story)) = self.scenes.get(&scene_key(level_id)) {
+            let t = plain(&self.text(title));
+            if !t.is_empty() {
+                return (t, *story);
+            }
+        }
+        (self.level_name_by_file(level_id), false)
+    }
+
+    fn level_name_by_file(&self, level_id: &str) -> String {
         let file = level_id.replace('\\', "/");
         let file = file.rsplit('/').next().unwrap_or("");
         let stem = file.strip_suffix(".unity").unwrap_or(file);
@@ -350,7 +431,8 @@ impl Resolver {
     }
 
     fn mission(&self, rec: &Defs) -> Value {
-        let mut name = self.level_name(&rec.level);
+        let c = consts::get();
+        let (mut name, story) = self.level_name(&rec.level);
         if name.is_empty() { name = "Mission".into(); }
         let mut mode = self.text(&rec.mode_title);
         if mode.is_empty() {
@@ -359,12 +441,22 @@ impl Resolver {
                 None => if rec.mode.is_empty() { String::new() } else { pretty(&rec.mode) },
             };
         }
+        // The hub (Aegis Station: crew quarters, vendors) is a level like any other and says so itself: its level
+        // type. A story mission has no mode either, so "no mode" only stands in where a game build does not give
+        // the level's type.
+        let hub = match (rec.level_type, c.lt_hub) {
+            (Some(kind), Some(hub)) => kind == hub,
+            _ => rec.mode.is_empty() && !story,
+        };
+        if mode.is_empty() && story && !hub {
+            // a story mission or prologue has no mode: the game's own word for the kind of mission
+            mode = self.text("Story");
+            if mode.is_empty() { mode = "Story".into(); }
+        }
         // difficulty and the "Tough" modifier are two separate things in the game (LevelDifficulty, LevelModifier)
-        json!({ "name": name, "type": mode, "difficulty": consts::get().difficulty(rec.difficulty),
+        json!({ "name": name, "type": mode, "difficulty": c.difficulty(rec.difficulty),
                 "tough": rec.modifier != 0, "level_id": rec.level, "mode_id": rec.mode, "avg_level": rec.avg_level,
-                // the game builds a mission's world with a level mode and the hub's (Aegis Station: crew quarters,
-                // vendors) without one
-                "hub": rec.mode.is_empty() })
+                "story": story, "hub": hub })
     }
 
     // ---- lookups used by the encounter model ----
@@ -395,8 +487,8 @@ impl Resolver {
         for (which, table) in order {
             if let Some(d) = table.get(&h) {
                 if which == 2 {
-                    // damage done by an entity and credited to the player: an enemy that explodes when killed,
-                    // a turret, a barrel, an area effect
+                    // damage done by an entity and credited to the player: a turret, a barrel, an area effect
+                    // (an enemy's own damage is not counted for a player, but it is named when a player takes it)
                     let k = match d.etype.as_str() {
                         "Enemy" => "enemy", "Turret" | "Drone" => "turret", "Explosive barrel" | "Destructible" => "barrel",
                         "Zone" => "area", "Projectile" => "effect", _ => "entity",
@@ -477,11 +569,14 @@ impl Resolver {
                 .or_else(|| passive.iter().find(|r| ctx.skills.contains(&r.id))).unwrap_or(&passive[0]);
             return Some(("skill", best.name.clone(), None));
         }
-        for r in &rows {
-            // an ability nobody has equipped here: a teammate's
+        // An ability the player does not have: a teammate's. Only when there is a teammate, and not when the game
+        // names the player's own entity as the giver (alone in a mission, the invulnerability at the end of it is
+        // nobody's Cleansing Pulse).
+        let teammate = ctx.others > 0 && s("from") != "self";
+        for r in rows.iter().filter(|_| teammate) {
             let aid = r.id.split('/').next().unwrap_or("");
             if let Some(&bi) = self.row_by_id.get(aid) {
-                if ctx.allies.is_empty() || ctx.allies.contains(aid) {
+                if !ctx.ally_builds || ctx.allies.contains(aid) {
                     let base = &self.rows[bi].name;
                     return Some(("ally", if r.id.contains('/') { format!("{base} ({})", r.name) } else { base.clone() }, None));
                 }
@@ -502,5 +597,63 @@ impl Resolver {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn titles_without_markup() {
+        assert_eq!(plain("Return [r]to Regen[/r]"), "Return to Regen");
+        assert_eq!(plain("[r]Ruptured[/r] Reality"), "Ruptured Reality");
+        assert_eq!(plain("Wave [3] of [many more] [x"), "Wave [3] of [many more] [x");
+    }
+
+    fn resolver() -> Resolver {
+        let mut r = Resolver::default();
+        r.loc.insert("Story_ReturnRegen".into(), "Return [r]to Regen[/r]".into());
+        r.loc.insert("Location_Hub".into(), "Aegis Station".into());
+        r.loc.insert("Story".into(), "Story".into());
+        r.scenes.insert(scene_key("Assets/Levels/Mission_Trusgan_ReturnRegen.unity"), ("Story_ReturnRegen".into(), true));
+        r.scenes.insert(scene_key("Assets/Levels/Hubs/HUB_AegisStation.unity"), ("Location_Hub".into(), false));
+        // a set that one ability's upgrade applies
+        r.rows.push(SkillRow { id: "cleansing-pulse".into(), name: "Cleansing Pulse".into(), kind: "active ability".into() });
+        r.rows.push(SkillRow { id: "cleansing-pulse/Pain Inhibitors".into(), name: "Pain Inhibitors".into(), kind: "ability upgrade".into() });
+        r.row_by_id.insert("cleansing-pulse".into(), 0);
+        r.owners.insert("invulnerability".into(), vec![1]);
+        r
+    }
+
+    #[test]
+    fn a_story_mission_is_a_mission_and_the_hub_is_not() {
+        let c = consts::install_for_tests();
+        let r = resolver();
+        let (hub, mission) = (c.lt_hub.unwrap(), c.lt_hub.unwrap() + 1);
+        // a story mission has no mode, like the hub: the level's own type tells them apart
+        let story = r.mission(&Defs { level: "Assets\\Levels\\Mission_Trusgan_ReturnRegen.unity".into(), level_type: Some(mission), ..Default::default() });
+        assert_eq!((story["name"].as_str(), story["type"].as_str(), story["hub"].as_bool()), (Some("Return to Regen"), Some("Story"), Some(false)));
+        let station = r.mission(&Defs { level: "Assets/Levels/Hubs/HUB_AegisStation.unity".into(), level_type: Some(hub), ..Default::default() });
+        assert_eq!((station["name"].as_str(), station["type"].as_str(), station["hub"].as_bool()), (Some("Aegis Station"), Some(""), Some(true)));
+        // a level this program has no title for is still a mission, named by its file
+        let prologue = r.mission(&Defs { level: "Assets/Levels/Prologue_Trusgan_1.unity".into(), level_type: Some(mission), ..Default::default() });
+        assert_eq!((prologue["name"].as_str(), prologue["hub"].as_bool()), (Some("Prologue Trusgan 1"), Some(false)));
+        // a game build that does not give the level's type: no mode means the hub, unless it is a known story mission
+        let untyped = |level: &str| r.mission(&Defs { level: level.into(), ..Default::default() })["hub"].as_bool();
+        assert_eq!((untyped("Assets/Levels/Hubs/HUB_AegisStation.unity"), untyped("Assets/Levels/Mission_Trusgan_ReturnRegen.unity")), (Some(true), Some(false)));
+    }
+
+    #[test]
+    fn nobody_elses_ability_when_alone() {
+        consts::install_for_tests();
+        let r = resolver();
+        let ctx = |others: usize| OwnerCtx { allies: HashSet::new(), abilities: HashSet::new(), skills: HashSet::new(), by_hash: HashMap::new(),
+            others, ally_builds: false };
+        let effect = |from: &str| json!({ "key": "4f26b399", "asset": "Invulnerability", "name": "Invulnerability", "owner": 0, "from": from });
+        // alone in a mission, the invulnerability at the end of it is not a teammate's Cleansing Pulse
+        assert_eq!(r.effect_owner(&effect(""), &ctx(0)), None);
+        assert_eq!(r.effect_owner(&effect(""), &ctx(2)), Some(("ally", "Cleansing Pulse (Pain Inhibitors)".to_string(), None)));
+        assert_eq!(r.effect_owner(&effect("self"), &ctx(2)), None);
     }
 }
