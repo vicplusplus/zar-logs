@@ -37,7 +37,10 @@ const BUCKET: f64 = 1.0;
 /// How many damage types an aggregate keeps apart. The game has six today; a seventh would be counted in the
 /// totals and left out of the per-type split until this grows.
 const TYPE_SLOTS: usize = 8;
-pub const FORMAT: u32 = 9;
+/// 10: a kill is a final blow on the last of a lineage (before: any final blow on an enemy), damage taken has one
+/// row per attacker and no hits without damage, and a skill is only named as an effect's source for a player who
+/// has it. The page corrects what it can of older logs when it shows them.
+pub const FORMAT: u32 = 10;
 /// A hit whose source definition is not known yet waits this long (world seconds) for the definition tables of the
 /// mission to be read again, so that it can be told whether an enemy did it.
 const UNKNOWN_HOLD: f64 = 2.0;
@@ -864,9 +867,11 @@ impl Encounter {
         }
         let key = attack_key(h);
         let tkey = if h.tdh != 0 { format!("{:08x}", h.tdh) } else { format!("i{}", h.tdi) };
-        // a "final blow" on a prop (pod shell, barrel, crate) is not a kill: count enemies only
+        // A kill, as the game's own count has it: the final blow on an enemy that is the last of its lineage. A
+        // Multiplier that splits is not (its last descendants are), and a "final blow" on a prop (pod shell,
+        // barrel, crate) is no kill at all.
         let enemy = r.is_enemy(h.tdh);
-        let kill = h.fl & c.hit_final != 0 && enemy;
+        let kill = h.fl & c.hit_final != 0 && enemy && c.hit_last.is_none_or(|last| h.fl & last != 0);
         let p = self.players.get_mut(&h.ac).unwrap();
         let cid = p.cid;
         // a structure: the target is known not to be an enemy
@@ -990,6 +995,12 @@ impl Encounter {
             by_hash: abilities.iter().map(|a| (a.hash, (a.asset.as_str(), a.name.as_str()))).collect(),
             others: self.players.len().saturating_sub(1),
             ally_builds: self.players.values().any(|q| q.cid != p.cid && q.build.is_some()),
+            ally_skills: self.players.values().filter(|q| q.cid != p.cid).flat_map(|q| raw(q, "skills").as_array().cloned().unwrap_or_default())
+                .filter(|s| s[1].as_i64().unwrap_or(0) != 0).filter_map(|s| s[0].as_str().map(str::to_string)).collect(),
+            build_known: p.build.is_some(),
+            mods: raw(p, "gear").as_array().into_iter().flatten().flat_map(|g| g["mods"].as_array().cloned().unwrap_or_default())
+                .chain(raw(p, "armour_mods").as_array().cloned().unwrap_or_default())
+                .filter_map(|m| m["enh"].as_str().filter(|e| !e.is_empty()).map(str::to_lowercase)).collect(),
         };
         let owner_of = |e: &Value| r.effect_owner(e, &ctx);
         let mut effects = self.buffs(&p.fx, None, r);
@@ -1334,11 +1345,24 @@ impl Encounter {
         order.sort_by(|a, b| b.fig[base.index()].total.dmg.partial_cmp(&a.fig[base.index()].total.dmg).unwrap_or(std::cmp::Ordering::Equal));
         let mut players = Vec::new();
         for p in &order {
-            let mut taken: Vec<(f64, Value)> = p.taken_by.iter().map(|(k, v)| {
-                let mut d = obj(json!({ "key": k, "damage": v.0, "hits": v.1 }));
-                d.extend(obj(r.attack(k)));
-                (v.0, Value::Object(d))
-            }).collect();
+            // attackers with one name are one row: an enemy is a separate definition per difficulty stage
+            let mut by_name: IndexMap<(String, String), Map<String, Value>> = IndexMap::new();
+            for (k, v) in &p.taken_by {
+                let info = obj(r.attack(k));
+                let text = |field: &str| info.get(field).and_then(Value::as_str).unwrap_or("").to_string();
+                match by_name.get_mut(&(text("name"), text("kind"))) {
+                    Some(row) => {
+                        row.insert("damage".into(), json!(row["damage"].as_f64().unwrap_or(0.0) + v.0));
+                        row.insert("hits".into(), json!(row["hits"].as_u64().unwrap_or(0) + v.1));
+                    }
+                    None => {
+                        let mut row = obj(json!({ "key": k, "damage": v.0, "hits": v.1 }));
+                        row.extend(info.clone());
+                        by_name.insert((text("name"), text("kind")), row);
+                    }
+                }
+            }
+            let mut taken: Vec<(f64, Value)> = by_name.into_values().map(|row| (row["damage"].as_f64().unwrap_or(0.0), Value::Object(row))).collect();
             taken.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
             let mut d = self.damage_json(p, base, party, ct, n, r);
             d.extend(obj(json!({
@@ -1734,6 +1758,17 @@ mod tests {
         Rec::Sample(Sample { wall, t, match_id: "m".into(), clients: vec![client], ents: Some(Ents { n: 1, players: vec![me], ..Default::default() }), res: None })
     }
 
+    /// The same hit as the one that killed its target, the last of its lineage or not.
+    fn killing(c: &Consts, rec: Rec, last: bool) -> Rec {
+        match rec {
+            Rec::Hit(mut h) => {
+                h.fl |= c.hit_final | if last { c.hit_last.unwrap() } else { 0 };
+                Rec::Hit(h)
+            }
+            other => other,
+        }
+    }
+
     /// A hit the server reports, credited to client 1: `attack` = (attack type, source definition).
     fn hit(c: &Consts, t: f64, attack: (u8, u32), target: u32, dmg: f64) -> Rec {
         Rec::Hit(Hit { t, seq: 0, src: c.src_server, sc: 0, tgt: 500, tdi: 0, tdh: target, da: dmg, dhu: dmg, dsu: 0.0, dh: dmg, ds: 0.0,
@@ -1820,6 +1855,51 @@ mod tests {
         view(&mut seven, neither);
         assert_eq!((eight["structures"].as_str(), eight["blasts"].as_str(), eight["party_damage"].as_f64(), eight["targets"].as_array().unwrap().len()), (Some("on"), Some("never"), Some(12.0), 1));
         assert_eq!((seven["structures"].as_str(), seven["blasts"].as_str(), seven["targets"].as_array().unwrap().len()), (Some("always"), Some("always"), 1));
+    }
+
+    #[test]
+    fn kills_are_counted_as_the_game_counts_them() {
+        let c = consts::install_for_tests();
+        let weapon = (c.at_weapon, WEAPON);
+        let mut t = Tracker::new(Resolver::empty());
+        t.feed(&[frame(&c, 10.0, 1.0, false), defs(&c, &[]), sample(10.0, 1.0)]);
+        t.feed(&[
+            killing(&c, hit(&c, 2.0, weapon, ZOMBIE, 100.0), true),
+            // an enemy that splits when it dies: not the last of its lineage, so not a kill yet
+            killing(&c, hit(&c, 2.1, weapon, DETONATOR, 100.0), false),
+            // a crate is "killed" too, and is no kill
+            killing(&c, hit(&c, 2.2, weapon, CRATE, 100.0), true),
+            hit(&c, 2.3, weapon, ZOMBIE, 100.0),
+        ]);
+        let d = t.cur.as_ref().unwrap().detail(&t.resolver);
+        assert_eq!((d["players"][0]["kills"].as_u64(), d["players"][0]["sources"][0]["kills"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(d["views"]["structures"]["players"]["1"]["kills"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn damage_taken_has_one_row_per_attacker() {
+        let c = consts::install_for_tests();
+        let entity_attack = c.attack_types.iter().position(|t| t == "Entity").unwrap() as u8;
+        let on_player = |rec: Rec| match rec { Rec::Hit(mut h) => { h.tgt = 100; Rec::Hit(h) }, other => other };
+        let (stage_0, stage_1) = (0x51, 0x52);
+        let mut t = Tracker::new(Resolver::empty());
+        t.feed(&[frame(&c, 10.0, 1.0, false), defs(&c, &[stage_0, stage_1]), sample(10.0, 1.0)]);
+        // two difficulty stages of one enemy are two definitions with one name
+        for stage in [stage_0, stage_1] {
+            t.resolver.rename_entity_for_tests(stage, "Detonators");
+        }
+        t.feed(&[
+            on_player(hit(&c, 2.0, (entity_attack, stage_0), 0, 25.0)),
+            on_player(hit(&c, 2.1, (entity_attack, stage_1), 0, 40.0)),
+            on_player(hit(&c, 2.2, (entity_attack, stage_1), 0, 5.0)),
+            on_player(hit(&c, 2.3, (entity_attack, ZOMBIE), 0, 10.0)),
+        ]);
+        let d = t.cur.as_ref().unwrap().detail(&t.resolver);
+        let rows: Vec<(&str, f64, u64)> = d["players"][0]["taken_by"].as_array().unwrap().iter()
+            .map(|r| (r["name"].as_str().unwrap(), r["damage"].as_f64().unwrap(), r["hits"].as_u64().unwrap())).collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("Detonators", 70.0, 3));
+        assert_eq!((rows[1].1, rows[1].2), (10.0, 1));
     }
 
     #[test]

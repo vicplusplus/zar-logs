@@ -147,7 +147,10 @@ One file per mission in the logs folder, `enc-<id>_<map>_<mode>_<difficulty>.jso
 local start time; the rest of the name is for people. `index.json` is a cache of the summaries and is rebuilt from
 the files whenever they disagree. `detail.format` is the log format (`session::FORMAT`); a log of an older format
 is shown as recorded and is not converted: format 7 (version 0.1) has one set of figures with structures and
-enemy hits in them, format 8 (0.2.0) has structures apart under `with_structures` and no enemy hits at all.
+enemy hits in them, format 8 (0.2.0) has structures apart under `with_structures` and no enemy hits at all, and
+before format 10 a kill was any final blow on an enemy, where it is now the game's own count: a final blow on the
+last of a lineage (an enemy that splits is not one). The page corrects what it can of older logs when it shows
+them (`TIDY_FORMAT` in `web/app.js`).
 
 An imported log (`store::import`) is another person's file and is handled as untrusted: it must be a whole log
 with a usable id and a format this version knows, every rendered build in it is cut back to the raw loadout and

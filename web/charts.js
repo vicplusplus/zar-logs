@@ -185,7 +185,7 @@ function timelineChart(host, opts) {
   let lanesH = 0, prevGroup = null;
   const rows = [];
   for (const ln of lanes) {
-    if (ln.group !== prevGroup) { rows.push({ y: lanesH, head: ln.group }); lanesH += headH; prevGroup = ln.group; }
+    if (ln.group !== prevGroup) { rows.push({ y: lanesH, head: ln.groupLabel || ln.group }); lanesH += headH; prevGroup = ln.group; }
     rows.push({ y: lanesH, lane: ln });
     lanesH += rowH;
   }

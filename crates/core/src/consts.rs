@@ -13,6 +13,9 @@ use crate::layout::Layout;
 pub struct Consts {
     // HitEventDamageInfoFlags
     pub hit_final: u16,
+    /// LastInLineage: nothing comes after the entity that died. A Multiplier that splits is not the last of its
+    /// lineage; the game's own kill count takes only final blows that are. None when this game build has no such flag.
+    pub hit_last: Option<u16>,
     pub hit_crit: u16,
     pub hit_explosion: u16,
     pub hit_dodge: u16,
@@ -79,6 +82,7 @@ impl Consts {
         let e = |name: &str, member: &str| lay.en(name, member);
         Consts {
             hit_final: e("HitEventDamageInfoFlags", "FinalBlow") as u16,
+            hit_last: lay.members("HitEventDamageInfoFlags").iter().find(|(m, _)| m == "LastInLineage").map(|(_, v)| *v as u16),
             hit_crit: e("HitEventDamageInfoFlags", "IsCrit") as u16,
             hit_explosion: e("HitEventDamageInfoFlags", "IsExplosion") as u16,
             hit_dodge: e("HitEventDamageInfoFlags", "IsDodge") as u16,
@@ -163,7 +167,7 @@ pub fn get() -> Arc<Consts> {
 pub fn install_for_tests() -> Arc<Consts> {
     let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let c = Arc::new(Consts {
-        hit_final: 0x40, hit_crit: 0x02, hit_explosion: 0x100, hit_dodge: 0x08, hit_dot: 0x10,
+        hit_final: 0x40, hit_last: Some(0x400), hit_crit: 0x02, hit_explosion: 0x100, hit_dodge: 0x08, hit_dot: 0x10,
         src_server: 3, ws_ingame: 5, cs_running: 7, cs_ended: 9,
         et_player: 4, et_enemy: 2, et_destructible: 1, flag_boss: 0x800,
         fx_applied: 6, fx_trigger_only: 25, ab_active: 2, at_weapon: 5, at_ability: 6,

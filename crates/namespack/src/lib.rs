@@ -37,8 +37,9 @@
 //! * `missions` (`CampaignMissionSO`): the story missions and prologues, each with its title key and `scene`.
 //!   They are levels without a descriptor and without a mode.
 //! * `classes` (`PlayerClassDefinitionSO`): lower-case `className` -> the class's English title.
-//! * `enhancements` (`GearModEnhancementDefinitionSO`): asset name and title key of the unique gear mods, the last
-//!   place an effect is looked up when nothing else claims it.
+//! * `enhancements` (`GearModEnhancementDefinitionSO`): asset name and title key of the unique gear mods, and the
+//!   status-effect `sets` each one's data refers to: an effect of such a set on a player who has the mod fitted is
+//!   that mod's. By name they are also the last place an effect is looked up when nothing else claims it.
 //! * `effect_types`: `StatusEffectType` value -> readable name, for effects that belong to no set.
 //! * `skills`: one row per class ability, upgrade, enhancement and passive skill with the status-effect sets its
 //!   data mentions (see the `skills` module).
@@ -84,7 +85,7 @@ use zar_logs_core::names::pretty;
 type Obj = Map<String, Value>;
 
 /// Version of the pack's format, written as its `version`.
-pub const VERSION: u64 = 2;
+pub const VERSION: u64 = 3;
 
 /// Every ScriptableObject class [`build`] and [`skill_rows`] need: the nine the pack's sections and the skill
 /// rows are made from, `AdditionalMovementContactDefinitionSO` and `Currency` because skill data refers to their
@@ -299,8 +300,26 @@ pub fn build(
         let title = text(o.get("title"));
         classes.insert(class_name.to_lowercase(), json!(if title.is_empty() { pretty(class_name) } else { title.to_string() }));
     }
-    let enhancements: Vec<Value> = assets(so, "GearModEnhancementDefinitionSO").into_iter()
-        .map(|(_, o)| json!({ "name": name_of(o), "title": title_key(o) })).collect();
+    // the status-effect sets an enhancement refers to anywhere in its data (its bonuses and their behaviours)
+    let set_names = so.get("StatusEffectSetDefinitionSO");
+    fn referenced_sets(v: &Value, sets: Option<&Obj>, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                let name = m.get("m_PathID").map(Value::to_string).and_then(|id| sets?.get(&id)).and_then(|set| set.get("_name")).and_then(Value::as_str);
+                if let Some(name) = name.filter(|name| !out.iter().any(|seen| seen == name)) {
+                    out.push(name.to_string());
+                }
+                m.values().for_each(|x| referenced_sets(x, sets, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| referenced_sets(x, sets, out)),
+            _ => {}
+        }
+    }
+    let enhancements: Vec<Value> = assets(so, "GearModEnhancementDefinitionSO").into_iter().map(|(_, o)| {
+        let mut sets = Vec::new();
+        o.values().for_each(|v| referenced_sets(v, set_names, &mut sets));
+        json!({ "name": name_of(o), "title": title_key(o), "sets": sets })
+    }).collect();
     let effect_names: Obj = keyed(effect_types.iter().filter_map(|(member, v)| Some((v.as_i64()?, sentence(member)))))
         .into_iter().map(|(value, name)| (value.to_string(), json!(name))).collect();
     let skills: Vec<Value> = skills.iter()

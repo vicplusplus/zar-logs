@@ -175,6 +175,12 @@ pub struct OwnerCtx<'a> {
     pub others: usize,
     /// whether the loadout of any of them is known (`allies` is only complete then)
     pub ally_builds: bool,
+    /// ids of the passive skills other players have
+    pub ally_skills: HashSet<String>,
+    /// whether this player's own loadout is known (`skills` is only complete then)
+    pub build_known: bool,
+    /// asset names, lower case, of the unique mods (enhancements) this player has fitted
+    pub mods: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -190,6 +196,8 @@ pub struct Resolver {
     modes: HashMap<String, String>,
     classes: HashMap<String, String>,
     enhancements: Vec<(String, String)>,
+    /// set asset name, lower case -> the enhancements (positions in `enhancements`) whose data applies it
+    mod_sets: HashMap<String, Vec<usize>>,
     effect_types: HashMap<u8, String>,
     owners: HashMap<String, Vec<usize>>,
     rows: Vec<SkillRow>,
@@ -234,6 +242,11 @@ impl Resolver {
         r.modes = v["modes"].as_object().into_iter().flatten().map(|(k, x)| (k.clone(), s(x))).collect();
         r.classes = v["classes"].as_object().into_iter().flatten().map(|(k, x)| (k.clone(), s(x))).collect();
         r.enhancements = v["enhancements"].as_array().into_iter().flatten().map(|d| (s(&d["name"]), s(&d["title"]))).collect();
+        for (i, d) in v["enhancements"].as_array().into_iter().flatten().enumerate() {
+            for set in d["sets"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                r.mod_sets.entry(set.to_lowercase()).or_default().push(i);
+            }
+        }
         r.effect_types = v["effect_types"].as_object().into_iter().flatten().filter_map(|(k, x)| Some((k.parse().ok()?, s(x)))).collect();
         for d in v["skills"].as_array().into_iter().flatten() {
             let i = r.rows.len();
@@ -371,6 +384,13 @@ impl Resolver {
     }
 
     pub fn is_boss(&self, hash: u32) -> bool { self.entities.get(&hash).is_some_and(|d| d.boss) }
+
+    #[cfg(test)]
+    pub fn rename_entity_for_tests(&mut self, hash: u32, name: &str) {
+        if let Some(d) = self.entities.get_mut(&hash) {
+            d.name = name.to_string();
+        }
+    }
 
     /// Who did a hit with this attack type and source definition (see `Attacker`).
     pub fn attacker(&self, attack_type: u8, hash: u32) -> Attacker {
@@ -565,9 +585,31 @@ impl Resolver {
         }
         let passive: Vec<&&SkillRow> = rows.iter().filter(|r| r.kind == "passive skill").collect();
         if !passive.is_empty() {
-            let best = passive.iter().find(|r| norm(&r.id) == norm(&asset))
-                .or_else(|| passive.iter().find(|r| ctx.skills.contains(&r.id))).unwrap_or(&passive[0]);
-            return Some(("skill", best.name.clone(), None));
+            // A passive skill that applies this set: the player's own, else a teammate's (Grouped Shots reaches
+            // the whole squad). When nobody here has one, the effect is not from a skill at all: an enemy made the
+            // player Vulnerable, not the Threat Identification nobody took.
+            let among = |ids: &HashSet<String>, r: &SkillRow| ids.iter().any(|id| norm(id) == norm(&r.id));
+            if let Some(own) = passive.iter().find(|r| among(&ctx.skills, r)) {
+                return Some(("skill", own.name.clone(), None));
+            }
+        }
+        // A unique mod the player has fitted whose data applies this set. (Targeting Reticule makes what the
+        // player crits Vulnerable, and the game puts that same effect on the player too.)
+        let fitted = self.mod_sets.get(&asset).into_iter().flatten().map(|&i| &self.enhancements[i]).find(|(name, _)| ctx.mods.contains(&name.to_lowercase()));
+        if let Some((name, title)) = fitted {
+            let t = self.text(title);
+            return Some(("mod", if t.is_empty() { pretty(&name.replace("ModEnhancement_", "")) } else { t }, None));
+        }
+        if !passive.is_empty() {
+            let among = |ids: &HashSet<String>, r: &SkillRow| ids.iter().any(|id| norm(id) == norm(&r.id));
+            if !ctx.build_known {
+                // the player's skills are not known: the skill named like the set, else the first that applies it
+                let best = passive.iter().find(|r| norm(&r.id) == norm(&asset)).unwrap_or(&passive[0]);
+                return Some(("skill", best.name.clone(), None));
+            }
+            if let Some(theirs) = passive.iter().find(|r| among(&ctx.ally_skills, r)) {
+                return Some(("ally", theirs.name.clone(), None));
+            }
         }
         // An ability the player does not have: a teammate's. Only when there is a teammate, and not when the game
         // names the player's own entity as the giver (alone in a mission, the invulnerability at the end of it is
@@ -649,11 +691,36 @@ mod tests {
         consts::install_for_tests();
         let r = resolver();
         let ctx = |others: usize| OwnerCtx { allies: HashSet::new(), abilities: HashSet::new(), skills: HashSet::new(), by_hash: HashMap::new(),
-            others, ally_builds: false };
+            others, ally_builds: false, ally_skills: HashSet::new(), build_known: true, mods: HashSet::new() };
         let effect = |from: &str| json!({ "key": "4f26b399", "asset": "Invulnerability", "name": "Invulnerability", "owner": 0, "from": from });
         // alone in a mission, the invulnerability at the end of it is not a teammate's Cleansing Pulse
         assert_eq!(r.effect_owner(&effect(""), &ctx(0)), None);
         assert_eq!(r.effect_owner(&effect(""), &ctx(2)), Some(("ally", "Cleansing Pulse (Pain Inhibitors)".to_string(), None)));
         assert_eq!(r.effect_owner(&effect("self"), &ctx(2)), None);
+    }
+
+    #[test]
+    fn a_skill_is_only_the_source_for_someone_who_has_it() {
+        consts::install_for_tests();
+        let mut r = resolver();
+        r.rows.push(SkillRow { id: "threatidentification".into(), name: "Threat Identification".into(), kind: "passive skill".into() });
+        r.owners.insert("vulnerable".into(), vec![r.rows.len() - 1]);
+        let effect = json!({ "key": "614000dd", "asset": "Vulnerable", "name": "Vulnerable", "owner": 0, "from": "" });
+        r.enhancements.push(("ModEnhancement_TargetingReticule".into(), "Reticule_Title".into()));
+        r.loc.insert("Reticule_Title".into(), "Targeting Reticule".into());
+        r.mod_sets.insert("vulnerable".into(), vec![r.enhancements.len() - 1]);
+        let with_mods = |own: &[&str], theirs: &[&str], build_known: bool, mods: &[&str]| OwnerCtx { allies: HashSet::new(), abilities: HashSet::new(),
+            skills: own.iter().map(|s| s.to_string()).collect(), by_hash: HashMap::new(), others: theirs.len(), ally_builds: true,
+            ally_skills: theirs.iter().map(|s| s.to_string()).collect(), build_known, mods: mods.iter().map(|s| s.to_string()).collect() };
+        let ctx = |own: &[&str], theirs: &[&str], build_known: bool| with_mods(own, theirs, build_known, &[]);
+        // the player's own unique mod applies this set: it is the mod's, whatever skills exist that could
+        assert_eq!(r.effect_owner(&effect, &with_mods(&["groupedshots"], &[], true, &["modenhancement_targetingreticule"])),
+                   Some(("mod", "Targeting Reticule".to_string(), None)));
+        assert_eq!(r.effect_owner(&effect, &ctx(&["ThreatIdentification"], &[], true)), Some(("skill", "Threat Identification".to_string(), None)));
+        // nobody took the skill: an enemy made the player vulnerable, and no skill is named for it
+        assert_eq!(r.effect_owner(&effect, &ctx(&["groupedshots"], &[], true)), None);
+        assert_eq!(r.effect_owner(&effect, &ctx(&[], &["threatidentification"], true)), Some(("ally", "Threat Identification".to_string(), None)));
+        // without the player's loadout there is nothing to check against
+        assert_eq!(r.effect_owner(&effect, &ctx(&[], &[], false)), Some(("skill", "Threat Identification".to_string(), None)));
     }
 }

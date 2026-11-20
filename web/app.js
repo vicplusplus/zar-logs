@@ -107,6 +107,43 @@ function onLive(l) {
 }
 async function refreshListQuiet() { try { ui.list = await getJSON("/api/encounters"); renderList(); } catch (e) { /* next tick */ } }
 
+// ---------- logs recorded by earlier versions ----------
+// The format of a log from which its kills are the game's kills, its damage-taken rows are one per attacker, and a
+// skill is only named as an effect's source for a player who has it.
+const TIDY_FORMAT = 10;
+// A log from before can name a passive skill as the source of an effect on a player who never took it (an enemy's
+// Vulnerable shown as "Skill: Threat Identification"). The build in the log says which skills the player has: a
+// skill it lists at rank 0 is not the player's, and is a teammate's only if a teammate has it.
+function skillRanks(p) {
+  const ranks = new Map();
+  for (const g of (p.build && p.build.skills) || []) for (const sk of g.items || []) ranks.set(sk.name, sk.rank);
+  return ranks;
+}
+function playerLanes(d, p) {
+  const lanes = (p && p.lanes) || [];
+  if (!p || d.format >= TIDY_FORMAT) return lanes;
+  const mine = skillRanks(p);
+  return lanes.map(ln => {
+    const m = /^Skill: (.+)$/.exec(ln.source || "");
+    if (!m || mine.get(m[1]) !== 0) return ln;
+    const ally = d.players.some(q => q !== p && skillRanks(q).get(m[1]) > 0);
+    return Object.assign({}, ln, { source: ally ? "Ally: " + m[1] : "" });
+  });
+}
+// Buffs, debuffs and other effects are the ones on somebody: the selected player, or the boss the chart is narrowed
+// to. The heading of each group of rows says who.
+function onWhom(lanes, who) {
+  return lanes.map(ln => ln.group === "Abilities" ? ln : Object.assign({}, ln, { groupLabel: `${ln.group} on ${who}` }));
+}
+function whoIs(p) { return p.local ? "you" : p.name; }
+// Kills in the tables of such a log are final blows, which counts an enemy that splits (Multipliers) at every split.
+function oldKillsNote(d, p, rows) {
+  const sum = rows.reduce((a, x) => a + (x.kills || 0), 0);
+  if (d.format >= TIDY_FORMAT || !p.kills_native || sum <= p.kills_native) return null;
+  return h("div", { class: "note" }, `Recorded by an earlier version: "Kills" in this table counts final blows (${fmtFull(sum)}), `
+    + `and an enemy that splits is counted at every split. The game's own count, ${fmtFull(p.kills_native)}, is the one shown above.`);
+}
+
 // ---------- sidebar ----------
 function missionName(m, fallback) { return (m && m.name) || fallback || "Mission"; }
 // The game mode and difficulty say what kind of run it was; the map comes second. "Pods (Hard)", then "Geode Cavern".
@@ -360,7 +397,7 @@ function partyCard(d) {
 function timeCard(d) {
   const p = d.players.find(x => x.cid === ui.player);
   const boss = (d.bosses || []).find(b => b.id === ui.target);
-  const lanes = boss ? boss.lanes : p ? p.lanes || [] : [];
+  const lanes = boss ? boss.lanes : playerLanes(d, p);
   const hidden = lanes.filter(l => l.group === "Other effects").length;
   const what = boss ? `Damage to ${boss.name}` : "Damage";
   const pick = (d.bosses || []).length ? h("select", { class: "pick", "aria-label": "Target shown in the chart",
@@ -530,6 +567,7 @@ function sourcesTab(d, p) {
     h("div", { class: "scroll-x" }, h("table", null,
       h("thead", null, h("tr", null, ["Source", "Damage", "Share", "DPS", "Hits", "Avg", "Min", "Max", "Crit rate", "DoT", "Kills", "Overkill"].map(t => h("th", null, t)))),
       h("tbody", null, rows))),
+    oldKillsNote(d, p, p.sources),
     h("div", { class: "card-head", style: "margin-top:20px" }, h("div", null, h("div", { class: "card-title" }, "Sources over time"),
       h("div", { class: "card-sub", id: "src-sub" }, "Damage per second by source"))),
     h("div", { class: "chart", id: "chart-src" }));
@@ -571,14 +609,24 @@ function targetsTab(d, p) {
           x.mitigated == null ? "–" : (x.mitigated_est ? "≈" : "") + pct(x.mitigated))),
         h("td", null, fmtFull(x.kills)));
     })),
+    oldKillsNote(d, p, p.targets),
     h("div", { class: "note" }, "Hover a target for its health, resistances and status immunities. “Resisted” is the share of the damage aimed at it that its resistances removed, from the resistance the game applied on each hit."));
 }
 function takenTab(d, p) {
-  const top = (p.taken_by[0] && p.taken_by[0].damage) || 1;
-  // logs of earlier versions also list hits that did nothing (a dash "hits" its own user for 0): not damage taken
-  const rows = p.taken_by.filter(x => x.damage > 0);
+  // Logs of earlier versions list hits that did nothing (a dash "hits" its own user for 0), and an attacker once
+  // per difficulty stage it came in. Neither belongs here: rows without damage are left out, and rows of one name
+  // and kind are added up.
+  const byName = new Map();
+  for (const x of p.taken_by) {
+    if (!(x.damage > 0)) continue;
+    const k = x.name + "\u0000" + (x.kind || "");
+    const row = byName.get(k);
+    if (row) { row.damage += x.damage; row.hits += x.hits; } else byName.set(k, Object.assign({}, x));
+  }
+  const rows = [...byName.values()].sort((a, b) => b.damage - a.damage);
+  const top = (rows[0] && rows[0].damage) || 1;
   return h("div", null,
-    h("div", { class: "card-sub", style: "margin-bottom:8px" }, `${fmt(p.taken)} damage taken in ${fmtFull(p.taken_hits)} hits · ${p.downs} downs · ${fmt(p.healed)} healed`),
+    h("div", { class: "card-sub", style: "margin-bottom:8px" }, `${fmt(p.taken)} damage taken in ${fmtFull(rows.reduce((a, x) => a + x.hits, 0))} hits · ${p.downs} downs · ${fmt(p.healed)} healed`),
     simpleTable(["From", "Damage", "Share", "Hits", "Avg"], rows.map(x => h("tr", null,
       barCell(x.name, "", x.damage / top, "var(--series-2)"),
       h("td", null, fmt(x.damage)), h("td", null, pct(p.taken ? x.damage / p.taken : 0)), h("td", null, fmtFull(x.hits)),
@@ -590,14 +638,14 @@ function takenTab(d, p) {
 }
 // ---------- abilities and effects table (the timeline itself sits under the damage chart) ----------
 function effectsTab(d, p) {
-  const lanes = colorLanes(p.lanes || []);
+  const lanes = onWhom(colorLanes(playerLanes(d, p)), whoIs(p));
   if (!lanes.length) return h("div", { class: "empty" }, "No abilities or status effects recorded for this player.");
   const rows = [];
   let group = null;
   for (const ln of lanes) {
     if (ln.group !== group) {
       group = ln.group;
-      rows.push(h("tr", { class: "group" }, h("td", { colspan: 5 }, group)));
+      rows.push(h("tr", { class: "group" }, h("td", { colspan: 5 }, ln.groupLabel || group)));
     }
     const untimed = ln.kind === "ability" && ln.timed === false;       // an instant ability has no uptime
     rows.push(h("tr", null,
@@ -608,7 +656,9 @@ function effectsTab(d, p) {
       h("td", null, String(ln.applications))));
   }
   return h("div", null,
-    h("div", { class: "card-sub", style: "margin-bottom:8px" }, "The same rows are drawn on the time axis under the damage chart above."),
+    h("div", { class: "card-sub", style: "margin-bottom:8px" }, `What ${p.local ? "you" : p.name} used, and the buffs and debuffs that were on ${p.local ? "you" : p.name}. `
+      + "The same rows are drawn on the time axis under the damage chart above."
+      + ((d.bosses || []).length ? " For the effects on a boss (what you put on it), choose the boss in the list above that chart." : "")),
     simpleTable(["Ability / effect", "Source", "Uptime", "Active time", "Uses"], rows));
 }
 
@@ -783,7 +833,9 @@ function captureNote(d) {
     bits.push(`your ${useWeapon ? "weapon" : "weapon and ability"} damage with structures ${fmtFull(mine)} vs the game's own counter ${fmtFull(me.native_total)} (${pct(mine / me.native_total)})`);
   }
   if (d.stats.blast_hits) bits.push(`${fmtFull(d.stats.blast_hits)} hits of enemy explosions the game credits to players, counted only when switched on`);
-  if (d.stats.enemy_hits) bits.push(`${fmtFull(d.stats.enemy_hits)} other hits by enemies the game credits to players are not counted`);
+  if (d.stats.enemy_hits) bits.push(d.blasts === "never"
+    ? `${fmtFull(d.stats.enemy_hits)} hits by enemies the game credits to players, explosions included, were not recorded`
+    : `${fmtFull(d.stats.enemy_hits)} other hits by enemies the game credits to players are not counted`);
   if (d.stats.late) bits.push(`${d.stats.late} hits read late`);
   return h("div", { class: "note" }, "Capture: " + bits.join(" · "));
 }
@@ -800,8 +852,9 @@ function drawCharts(d) {
       const [vals] = downsample(base, 600, ui.mode === "dps" ? "avg" : "last");
       return { name: pl.name, color: playerColor(d, pl.cid), values: vals };
     });
-    const own = colorLanes(sel ? sel.lanes || [] : []);
-    const lanes = (boss ? colorLanes(boss.lanes) : own).filter(l => ui.allEffects || l.group !== "Other effects");
+    const own = colorLanes(playerLanes(d, sel));
+    const lanes = (boss ? onWhom(colorLanes(boss.lanes), boss.name) : onWhom(own, sel ? whoIs(sel) : "the player"))
+      .filter(l => ui.allEffects || l.group !== "Other effects");
     // moments worth a line: every ability activation of the selected player, and bosses appearing / dying
     const markers = [];
     for (const ln of own) {
