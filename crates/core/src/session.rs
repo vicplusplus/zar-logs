@@ -819,7 +819,9 @@ impl Encounter {
         if self.friendly.contains(&h.tgt) {
             // damage taken by a player
             if let Some(p) = self.ent_client.get(&h.tgt).and_then(|c| self.players.get_mut(c)) {
-                if h.fl & c.hit_dodge == 0 {
+                // A hit that did nothing is not damage taken. The game sends some: a dash carries a damage-over-time
+                // effect on the dasher that its own "take no damage" effect brings to zero, two hits a dash.
+                if h.fl & c.hit_dodge == 0 && dmg > 0.0 {
                     p.taken += dmg;
                     p.taken_hits += 1;
                     let mut key = attack_key(h);
@@ -1818,6 +1820,23 @@ mod tests {
         view(&mut seven, neither);
         assert_eq!((eight["structures"].as_str(), eight["blasts"].as_str(), eight["party_damage"].as_f64(), eight["targets"].as_array().unwrap().len()), (Some("on"), Some("never"), Some(12.0), 1));
         assert_eq!((seven["structures"].as_str(), seven["blasts"].as_str(), seven["targets"].as_array().unwrap().len()), (Some("always"), Some("always"), 1));
+    }
+
+    #[test]
+    fn a_hit_that_did_nothing_is_not_damage_taken() {
+        let c = consts::install_for_tests();
+        let entity_attack = c.attack_types.iter().position(|t| t == "Entity").unwrap() as u8;
+        let on_player = |rec: Rec| match rec { Rec::Hit(mut h) => { h.tgt = 100; Rec::Hit(h) }, other => other };
+        let mut t = Tracker::new(Resolver::empty());
+        t.feed(&[frame(&c, 10.0, 1.0, false), defs(&c, &[]), sample(10.0, 1.0)]);
+        t.feed(&[
+            on_player(hit(&c, 2.0, (entity_attack, ZOMBIE), 0, 25.0)),
+            // the player's own dash, "hitting" the player for nothing
+            on_player(hit(&c, 2.1, (c.at_ability, 0xDA), 0, 0.0)),
+            on_player(hit(&c, 2.4, (c.at_ability, 0xDA), 0, 0.0)),
+        ]);
+        let p = &t.cur.as_ref().unwrap().players[&1];
+        assert_eq!((p.taken, p.taken_hits, p.taken_by.len()), (25.0, 1, 1));
     }
 
     #[test]

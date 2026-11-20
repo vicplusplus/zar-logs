@@ -575,9 +575,11 @@ function targetsTab(d, p) {
 }
 function takenTab(d, p) {
   const top = (p.taken_by[0] && p.taken_by[0].damage) || 1;
+  // logs of earlier versions also list hits that did nothing (a dash "hits" its own user for 0): not damage taken
+  const rows = p.taken_by.filter(x => x.damage > 0);
   return h("div", null,
     h("div", { class: "card-sub", style: "margin-bottom:8px" }, `${fmt(p.taken)} damage taken in ${fmtFull(p.taken_hits)} hits · ${p.downs} downs · ${fmt(p.healed)} healed`),
-    simpleTable(["From", "Damage", "Share", "Hits", "Avg"], p.taken_by.map(x => h("tr", null,
+    simpleTable(["From", "Damage", "Share", "Hits", "Avg"], rows.map(x => h("tr", null,
       barCell(x.name, "", x.damage / top, "var(--series-2)"),
       h("td", null, fmt(x.damage)), h("td", null, pct(p.taken ? x.damage / p.taken : 0)), h("td", null, fmtFull(x.hits)),
       h("td", null, fmt(x.hits ? x.damage / x.hits : 0))))),
