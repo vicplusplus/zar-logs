@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/cli", "crates/layoutgen", "crates/unity", "crates/namespack", "crates/gearcalc", "crates/buildview", "src-tauri"]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 authors = ["vicplusplus"]
 repository = "https://github.com/vicplusplus/zar-logs"
