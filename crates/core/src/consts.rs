@@ -39,6 +39,10 @@ pub struct Consts {
     pub fx_trigger_only: u8,
     /// AbilitySlotState.Active
     pub ab_active: u8,
+    /// AbilitySlotState.Ready
+    pub ab_ready: u8,
+    /// AbilitySlotState.InCooldown
+    pub ab_cooldown: u8,
     /// EntityKillAttributedAttackType.Weapon / Ability
     pub at_weapon: u8,
     pub at_ability: u8,
@@ -98,6 +102,8 @@ impl Consts {
             fx_applied: e("StatusEffectState", "Applied") as u8,
             fx_trigger_only: e("StatusEffectType", "DoBehaviours") as u8,
             ab_active: e("AbilitySlotState", "Active") as u8,
+            ab_ready: e("AbilitySlotState", "Ready") as u8,
+            ab_cooldown: e("AbilitySlotState", "InCooldown") as u8,
             at_weapon: e("EntityKillAttributedAttackType", "Weapon") as u8,
             at_ability: e("EntityKillAttributedAttackType", "Ability") as u8,
             attack_types: names_by_value(lay, "EntityKillAttributedAttackType"),
@@ -170,7 +176,7 @@ pub fn install_for_tests() -> Arc<Consts> {
         hit_final: 0x40, hit_last: Some(0x400), hit_crit: 0x02, hit_explosion: 0x100, hit_dodge: 0x08, hit_dot: 0x10,
         src_server: 3, ws_ingame: 5, cs_running: 7, cs_ended: 9,
         et_player: 4, et_enemy: 2, et_destructible: 1, flag_boss: 0x800,
-        fx_applied: 6, fx_trigger_only: 25, ab_active: 2, at_weapon: 5, at_ability: 6,
+        fx_applied: 6, fx_trigger_only: 25, ab_active: 2, ab_ready: 1, ab_cooldown: 3, at_weapon: 5, at_ability: 6,
         attack_types: names(&["", "", "", "", "Entity", "Weapon", "Ability"]),
         damage_types: names(&["Physical", "Heat"]),
         effect_categories: Vec::new(),

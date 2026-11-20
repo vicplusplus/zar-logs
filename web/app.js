@@ -874,7 +874,12 @@ function drawCharts(d) {
     for (const ln of own) {
       if (ln.kind === "ability") for (const [a] of ln.intervals) markers.push({ t: a, label: ln.name, color: ln.color });
     }
-    for (const ev of d.events || []) markers.push({ t: ev.t, label: ev.label, color: "var(--series-8)", full: true });
+    for (const ev of d.events || []) {
+      if (ev.kind === "reset") {
+        // a cooldown reset: only the selected player's (all of them in the party view)
+        if (!sel || ev.cid === sel.cid) markers.push({ t: ev.t, label: ev.label, color: "var(--series-7)", full: true });
+      } else markers.push({ t: ev.t, label: ev.label, color: "var(--series-8)", full: true });
+    }
     let level = null;
     if (boss && boss.hp_series.some(v => v)) {
       const [vals] = downsample(boss.hp_series.map(v => (v ? v[0] + v[1] : null)), 600, "last");

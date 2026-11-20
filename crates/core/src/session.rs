@@ -304,6 +304,10 @@ pub struct Player {
     /// ability slot -> use (keyed by its trigger time) -> [start, end, cooldown end]
     abil: BTreeMap<usize, IndexMap<u64, (f64, f64, Option<f64>)>>,
     abil_hash: BTreeMap<usize, u32>,
+    /// ability slot -> (state, cooldown end) at the previous sample, to see a cooldown cut short
+    abil_prev: BTreeMap<usize, (u8, f64)>,
+    /// cooldowns cut short: (time, slot, seconds that were left, the use whose cooldown it was)
+    resets: Vec<(f64, usize, f64, u64)>,
     fx: Fx,
     hp_series: HashMap<i64, (f64, f64)>,
     hp_max: f64,
@@ -317,7 +321,7 @@ impl Player {
         Player { cid, name: format!("Player {cid}"), cls: String::new(), sub: String::new(), lvl: 0, local: false, host: false,
             fig: Default::default(), targets: Default::default(), ents: HashSet::new(), taken: 0.0,
             taken_hits: 0, taken_by: IndexMap::new(), taken_series: Series::default(), healed: 0.0, kills_native: 0, downs: 0,
-            accuracy: None, native_total: None, abil: BTreeMap::new(), abil_hash: BTreeMap::new(), fx: Fx::default(),
+            accuracy: None, native_total: None, abil: BTreeMap::new(), abil_hash: BTreeMap::new(), abil_prev: BTreeMap::new(), resets: Vec::new(), fx: Fx::default(),
             hp_series: HashMap::new(), hp_max: 0.0, build: None, weapon_slot: HashMap::new() }
     }
 }
@@ -1054,8 +1058,31 @@ impl Encounter {
                 out.push((rnd(z, 3), json!({ "t": rnd(z, 3), "kind": "boss", "label": format!("{name} killed") })));
             }
         }
+        for p in self.players.values() {
+            for (t, list) in self.resets_json(p, r) {
+                let names: Vec<&str> = list.iter().map(|x| x["ability"].as_str().unwrap_or("")).collect();
+                let what: Vec<String> = list.iter().map(|x| format!("{} ({:.1} s left)", x["ability"].as_str().unwrap_or(""),
+                    x["left"].as_f64().unwrap_or(0.0))).collect();
+                out.push((t, json!({ "t": t, "kind": "reset", "cid": p.cid, "label": format!("Reset: {}", names.join(", ")),
+                    "detail": format!("Cooldowns reset for {}: {}", p.name, what.join(", ")) })));
+            }
+        }
         out.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
         out.into_iter().map(|x| x.1).collect()
+    }
+
+    /// A player's cooldown resets, the slots reset in the same sample together: (time, [{ability, left}]).
+    fn resets_json(&self, p: &Player, r: &Resolver) -> Vec<(f64, Vec<Value>)> {
+        let mut out: Vec<(f64, Vec<Value>)> = Vec::new();
+        for &(t, slot, left, _) in &p.resets {
+            let name = r.ability(slot, p.abil_hash.get(&slot).copied().unwrap_or(0)).0;
+            let row = json!({ "ability": name, "left": rnd(left, 2) });
+            match out.last_mut() {
+                Some(last) if (t - last.0).abs() < 1e-6 => last.1.push(row),
+                _ => out.push((rnd(t, 3), vec![row])),
+            }
+        }
+        out
     }
 
     /// Per-boss view: damage over time per player, health over time, the effects on it and who applied them.
@@ -1382,6 +1409,7 @@ impl Encounter {
                 "taken_hits": p.taken_hits, "taken_by": taken.into_iter().map(|t| t.1).collect::<Vec<_>>(),
                 "taken_series": p.taken_series.dense(n), "healed": p.healed, "kills_native": p.kills_native, "downs": p.downs,
                 "accuracy": p.accuracy, "native_total": p.native_total, "lanes": self.lanes(p, r), "build": p.build, "hp_max": p.hp_max,
+                "resets": self.resets_json(p, r).into_iter().map(|(t, list)| json!({ "t": t, "abilities": list })).collect::<Vec<_>>(),
                 "hp_series": (0..n).map(|i| p.hp_series.get(&i).map(|v| json!([v.0, v.1])).unwrap_or(Value::Null)).collect::<Vec<_>>(),
             })));
             // what the game's own damage counter is checked against, whatever is shown: it counts structures
@@ -1529,24 +1557,46 @@ fn effects(c: &Consts, fx: &mut Fx, rows: &[Effect], t: f64, t0: f64, any_owner:
 /// Ability slots of a player. One use = one distinct `last_trigger_time`. The ability is active from the trigger
 /// until its cooldown starts (`cooldown_start_time`; equal to the trigger for instant abilities), or for as long as
 /// the slot state is Active (2) when no cooldown has started yet.
+///
+/// A cooldown that leaves InCooldown with more than `RESET_MIN` seconds still to run was reset (Snap Cooldown,
+/// Life Saver ...): the moment is kept, and the cooldown shown ends there.
 fn abilities(c: &Consts, p: &mut Player, ab: &[Ability], t: f64, t0: f64) {
     for (slot, &(hash, last_trigger, (cd_dur, cd_start), (_remaining, total), state)) in ab.iter().enumerate() {
         p.abil_hash.insert(slot, hash);
         if total == 0 || last_trigger <= 0.0 {
             continue;
         }
+        let cd_end = if cd_start > 0.0 && cd_dur > 0.0 { cd_start + cd_dur - t0 } else { 0.0 };
+        let reset = match p.abil_prev.insert(slot, (state, cd_end)) {
+            // back to Ready (or straight into a new use); not Disabled or OutOfUses, which a downed player's slots go to
+            Some((was, end)) if was == c.ab_cooldown && (state == c.ab_ready || state == c.ab_active) && end - t > RESET_MIN => Some(end - t),
+            _ => None,
+        };
         let uses = p.abil.entry(slot).or_default();
+        if let Some(left) = reset {
+            // the use whose cooldown was running: the latest one that has a cooldown end
+            if let Some((k, u)) = uses.iter_mut().rev().find(|u| u.1.2.is_some()) {
+                u.2 = Some(max_f(u.1, t));
+                p.resets.push((t, slot, left, *k));
+            }
+        }
         let a = max_f(0.0, last_trigger - t0);
         let u = uses.entry(last_trigger.to_bits()).or_insert((a, a, None));
         if state == c.ab_active {
             u.1 = max_f(u.1, t);
         }
-        if cd_start >= last_trigger && cd_dur > 0.0 {
+        let key = last_trigger.to_bits();
+        let cut = p.resets.iter().any(|r| r.1 == slot && r.3 == key);
+        if cd_start >= last_trigger && cd_dur > 0.0 && !cut {
             u.1 = max_f(u.0, cd_start - t0);
             u.2 = Some(max_f(u.1, cd_start + cd_dur - t0));
         }
     }
 }
+
+/// Seconds of cooldown that must still be left for its early end to count as a reset, so that a timer read a frame
+/// before it runs out, or one sped up a little (Battle Ready, Dynamic Capacitor), is not taken for one.
+const RESET_MIN: f64 = 0.5;
 
 /// "%Y%m%d-%H%M%S" in local time: the id of an encounter, from the wall time it started at.
 fn local_stamp(wall: f64) -> String {
@@ -1972,5 +2022,40 @@ mod tests {
         let rows: Vec<(&str, &str, &str)> = lanes.iter().map(|l| (l["group"].as_str().unwrap(), l["name"].as_str().unwrap(), l["source"].as_str().unwrap_or(""))).collect();
         assert_eq!(rows, [("Abilities", "Dash", ""), ("Abilities", "Relay Race", "Dash"),
             ("Abilities", "Relay Race: movement speed modifier", "Dash"), ("Other effects", "Block actions", "")]);
+    }
+
+    #[test]
+    fn a_cooldown_cut_short_is_a_reset() {
+        let c = consts::install_for_tests();
+        // one slot: used at 2 s for 1 s, then 30 s of cooldown (ends at 33 s)
+        let at = |t: f64, state: u8| {
+            let mut s = sample(10.0 + t, t);
+            if let Rec::Sample(x) = &mut s {
+                x.ents.as_mut().unwrap().players[0].ab = vec![(0xAB, 2.0, (30.0, 3.0), (0, 1), state)];
+            }
+            s
+        };
+        let mut t = Tracker::new(Resolver::empty());
+        t.feed(&[frame(&c, 10.0, 1.0, false), defs(&c, &[]), sample(10.0, 1.0)]);
+        t.feed(&[frame(&c, 12.0, 2.0, false), at(2.0, c.ab_active), frame(&c, 14.0, 4.0, false), at(4.0, c.ab_cooldown),
+            frame(&c, 20.0, 10.0, false), at(10.0, c.ab_cooldown), frame(&c, 20.1, 10.1, false), at(10.1, c.ab_ready),
+            frame(&c, 21.0, 11.0, false), at(11.0, c.ab_ready)]);
+        let d = t.cur.as_ref().unwrap().detail(&t.resolver);
+        let p = &d["players"][0];
+        let reset = &p["resets"][0];
+        assert_eq!(p["resets"].as_array().unwrap().len(), 1);
+        assert!((reset["abilities"][0]["left"].as_f64().unwrap() - 23.0).abs() < 0.2, "{reset}");
+        let lane = p["lanes"].as_array().unwrap().iter().find(|l| l["kind"] == "ability").unwrap();
+        let cd_end = lane["cooldowns"][0][1].as_f64().unwrap();
+        assert!(cd_end < 10.5, "cooldown should end at the reset, ends at {cd_end}");
+        assert!(d["events"].as_array().unwrap().iter().any(|e| e["kind"] == "reset"));
+
+        // a cooldown that simply runs out is not a reset
+        let mut t = Tracker::new(Resolver::empty());
+        t.feed(&[frame(&c, 10.0, 1.0, false), defs(&c, &[]), sample(10.0, 1.0)]);
+        t.feed(&[frame(&c, 12.0, 2.0, false), at(2.0, c.ab_active), frame(&c, 14.0, 4.0, false), at(4.0, c.ab_cooldown),
+            frame(&c, 42.9, 32.9, false), at(32.9, c.ab_cooldown), frame(&c, 43.0, 33.0, false), at(33.0, c.ab_ready)]);
+        let d = t.cur.as_ref().unwrap().detail(&t.resolver);
+        assert!(d["players"][0]["resets"].as_array().unwrap().is_empty());
     }
 }
