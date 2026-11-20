@@ -31,7 +31,7 @@ const ui = {
   allEffects: false,    // also draw the internal / unnamed status effects under the chart
   srcColors: {},        // encounter id -> player cid -> source key -> slot (color follows the source, not its rank)
   lastFetch: 0,
-  notice: "",           // what the last export / import did, shown above the page for a while
+  notice: "",           // what the last import did, shown above the page for a while
   noticeTimer: 0,
 };
 
@@ -142,7 +142,9 @@ function renderList() {
       onclick: () => { ui.sel = r.id; ui.about = false; ui.player = null; ui.target = null; renderList(); refreshDetail(true); renderMain({ top: true }); } },
       h("div", { class: "enc-title" }, !r.closed ? h("span", { class: "pill live" }, "Live") : null,
         r.imported ? h("span", { class: "pill", title: "Imported from a file someone shared" }, "Imported") : null,
-        h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, m.type || missionName(m)), diffTags(m)),
+        h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, m.type || missionName(m)), diffTags(m),
+        // the experience the mission gave, where it can be compared down the list without opening each one
+        r.xp ? h("span", { class: "enc-xp", title: "XP gained in this mission" }, `+${fmtFull(r.xp)} XP`) : null),
       h("div", { class: "enc-sub" }, h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, missionPlace(r.mission)), h("span", null, times(r))),
       h("div", { class: "enc-sub dim" },
         h("span", null, d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })),
@@ -219,7 +221,7 @@ function aboutView() {
     card("What it keeps on your machine",
       list("Recorded missions (logs). They hold the display names of the players in the mission, their loadouts and every hit. Account ids are not stored.",
         "A cache of what was read from the game, per game version.",
-        "Nothing is uploaded. A log leaves your machine only when you export it and send the file to someone; the display names in it go with it.",
+        "Nothing is uploaded. A log leaves your machine only when you send its file to someone yourself; the display names in it go with it.",
         "A log you import is someone else's file. It is checked before it is added, and builds in it are drawn from your own copy of the game, not from the file."),
       app.data ? p("Data folder: ", path(app.data)) : null),
     card("Problems and new versions",
@@ -293,12 +295,13 @@ function renderMainInner(main) {
     h("div", { class: "head-actions" },
       !d.closed ? h("span", { class: "pill live" }, "Live") : null,
       d.imported ? h("span", { class: "pill", title: "Imported from a file someone shared" }, "Imported") : null,
-      d.closed ? h("button", { class: "btn", title: "Save a copy of this log to send to someone", onclick: () => exportEncounter(d.id) }, "Export…") : null,
-      d.closed ? h("button", { class: "btn", title: "Show this log's file in Explorer", onclick: () => act(`/api/encounter/${encodeURIComponent(d.id)}/reveal`).catch(() => {}) }, "Show file") : null,
+      d.closed ? h("button", { class: "btn", title: "Show this mission's log file in Explorer, to drag it to wherever you want to send it", onclick: () => showInFolder(d.id) }, "Show in folder") : null,
       d.closed ? h("button", { class: "btn danger", onclick: () => removeEncounter(d.id) }, "Delete") : null));
 
-  // what the figures count: damage to enemies, or to structures as well (crates, pods, barrels, level geometry)
-  const counted = d.structures === "on" ? "enemies and structures" : d.structures === "always" ? "structures included" : "enemies only";
+  // what the figures count besides the players' own damage to enemies: structures (crates, pods, barrels, level
+  // geometry) and the blasts of enemies that explode. A log from before these were kept apart has them in.
+  const extras = [d.structures === "on" ? "structures" : "", d.blasts === "on" ? "enemy explosions" : ""].filter(Boolean);
+  const counted = d.structures === "always" ? "structures and enemy explosions included" : extras.length ? "with " + extras.join(" and ") : "your damage to enemies";
   const tiles = h("div", { class: "tiles" },
     tile("Party damage", fmt(d.party_damage), `${fmtFull(d.party_damage)} · ${counted}`),
     tile("Party DPS", fmt(d.party_dps), "damage ÷ mission time"),
@@ -332,16 +335,23 @@ function partyCard(d) {
       h("td", null, pct(p.hits ? p.crits / p.hits : 0)), h("td", null, fmt(p.max)), h("td", null, fmtFull(p.kills_native || p.kills)),
       h("td", null, fmt(p.taken)), h("td", null, fmt(p.healed)), h("td", null, String(p.downs)));
   });
-  // Damage to structures is in every log next to the damage to enemies; this picks which of the two is shown,
-  // here and everywhere else (the list, the overlay). A log from before they were kept apart has only the sum.
+  // Two kinds of hit are in every log next to the players' own damage to enemies, and each can be counted or
+  // not, here and everywhere else (the list, the overlay): damage to structures, and the blasts of enemies that
+  // explode, which the game credits to a player. A log from before they were kept apart has only the sum; one of
+  // version 0.2.0 has structures apart and no blasts.
   const old = d.structures === "always";
-  const pickStructures = old ? null : seg([[false, "Enemies only"], [true, "With structures"]], d.structures === "on", setStructures);
+  const toggle = (label, title, state, what) => state === "on" || state === "off"
+    ? h("button", { class: "check" + (state === "on" ? " on" : ""), "aria-pressed": String(state === "on"), title, onclick: () => setCounted(what, state !== "on") },
+      h("i", { "aria-hidden": "true" }, state === "on" ? "✓" : ""), label) : null;
+  const pick = old ? null : h("div", { class: "checks" }, h("span", null, "Also count"),
+    toggle("Structures", "Damage to crates, pods, barrels and level geometry", d.structures, "structures"),
+    toggle("Enemy explosions", "Blasts of enemies that explode (Detonators), which the game credits to a player", d.blasts, "blasts"));
+  const note = old ? " · recorded by version 0.1: damage to structures and enemy explosions are in these figures"
+    : d.blasts === "never" ? " · recorded by version 0.2.0: enemy explosions were not recorded" : "";
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("div", null, h("div", { class: "card-title" }, "Party"),
-      h("div", { class: "card-sub" }, "Select a player to see their breakdown below"
-        + (old ? " · recorded by an older version: damage to structures (crates, pods, barrels) and blasts of enemies are in these figures"
-          : d.structures === "on" ? " · damage to structures (crates, pods, barrels) is counted" : " · damage to structures (crates, pods, barrels) is left out"))),
-      h("div", { class: "controls" }, pickStructures)),
+      h("div", { class: "card-sub" }, "Select a player to see their breakdown below" + note)),
+      h("div", { class: "controls" }, pick)),
     h("div", { class: "scroll-x" }, h("table", null,
       h("thead", null, h("tr", null, ["Player", "Damage", "DPS", "Share", "Crit rate", "Max hit", "Kills", "Taken", "Healed", "Downs"].map(t => h("th", null, t)))),
       h("tbody", null, rows))));
@@ -490,8 +500,8 @@ function playerCard(d) {
     body);
 }
 
-// what a damage source is. "enemy" only occurs in logs of older versions, which counted the blast of an enemy that
-// explodes when it dies (Detonators) for the player who killed it
+// what a damage source is. "enemy" = an enemy that explodes (Detonators): the game credits the blast to a player, and
+// it is only among the sources when "Enemy explosions" is counted (or in a log of version 0.1, where it always is)
 function kindLabel(k) {
   return { weapon: "Weapon", ability: "Ability", effect: "Ability effect", enemy: "Enemy explosion", turret: "Turret", barrel: "Environment",
     area: "Area effect", entity: "Entity", behaviour: "Effect", shield: "Shield", environment: "Environment" }[k] || k || "";
@@ -648,7 +658,8 @@ function modCard(md) {
     h("div", { class: "tcard-title" }, h("span", null, md.slot_label || `${md.slot} mod`), md.power != null ? h("b", null, `${md.power} power`) : null),
     md.stats && md.stats.length ? statList(md.stats.map(([k, v]) => [k, v])) : null,
     md.enh ? h("div", { class: "tcard-sec enh" }, h("div", { class: "tcard-enh" }, icon(md.enh.icon, "enh-ico"), md.enh.name),
-      md.enh.desc ? h("div", { class: "mod-line" }, md.enh.desc) : null) : null);
+      md.enh.desc ? h("div", { class: "mod-line" }, md.enh.desc) : null,
+      md.enh.stats && md.enh.stats.length ? statList(md.enh.stats) : null) : null);
 }
 // A unique mod (enhancement) is what defines a build, so its own icon is the face of the tile; the slot glyph moves to
 // the corner. A plain mod shows the slot glyph.
@@ -693,7 +704,7 @@ function stateLine(text, on) {
 function buildTab(d, p) {
   const b = p.build;
   if (!b) return h("div", { class: "empty" }, "No build captured for this player.");
-  if (b.version !== 6) return h("div", { class: "empty" }, b.note || "This log was recorded by an older version of the meter; its build cannot be shown in this layout.");
+  if (b.version !== 7) return h("div", { class: "empty" }, b.note || "This log was recorded by an older version of the meter; its build cannot be shown in this layout.");
   const c = b.character, a = b.armour;
   const out = [h("div", { class: "bhead" }, h("span", { class: "name" }, c.name), h("span", { class: "sub" }, [c.cls, c.sub].filter(Boolean).join(" · ")),
     h("span", { class: "tag" }, `Level ${c.level}`))];
@@ -769,7 +780,8 @@ function captureNote(d) {
     const mine = useWeapon ? weapon : direct;
     bits.push(`your ${useWeapon ? "weapon" : "weapon and ability"} damage with structures ${fmtFull(mine)} vs the game's own counter ${fmtFull(me.native_total)} (${pct(mine / me.native_total)})`);
   }
-  if (d.stats.enemy_hits) bits.push(`${fmtFull(d.stats.enemy_hits)} hits by enemies (blasts, attacks on turrets) the game credits to players are not counted`);
+  if (d.stats.blast_hits) bits.push(`${fmtFull(d.stats.blast_hits)} hits of enemy explosions the game credits to players, counted only when switched on`);
+  if (d.stats.enemy_hits) bits.push(`${fmtFull(d.stats.enemy_hits)} other hits by enemies the game credits to players are not counted`);
   if (d.stats.late) bits.push(`${d.stats.late} hits read late`);
   return h("div", { class: "note" }, "Capture: " + bits.join(" · "));
 }
@@ -843,14 +855,12 @@ async function removeEncounter(id) {
 }
 
 // ---------- sharing logs ----------
-// The app asks where to save (or which files to open) with a Windows dialog of its own; the page never sees a path
-// it did not get back from there.
-async function exportEncounter(id) {
+// A mission's log is one file. To share it, the app shows that file in Explorer, selected: drag it from there. To
+// add logs, the app asks which files with a Windows dialog of its own. The page never handles a path itself.
+async function showInFolder(id) {
   try {
-    const r = await act(`/api/encounter/${encodeURIComponent(id)}/export`);
-    if (r.ok) notify("Exported to " + r.path);
-    else if (!r.cancelled) notify("Could not export: " + (r.error || "unknown error"));
-  } catch (e) { notify("Could not export: " + e.message); }
+    if (!(await act(`/api/encounter/${encodeURIComponent(id)}/reveal`)).ok) notify("Could not show the file: it is no longer in the logs folder.");
+  } catch (e) { notify("Could not show the file: " + e.message); }
 }
 async function importEncounters() {
   try {
@@ -865,9 +875,9 @@ async function importEncounters() {
     notify(bits.join(" "));
   } catch (e) { notify("Could not import: " + e.message); }
 }
-async function setStructures(on) {
+async function setCounted(what, on) {
   try {
-    await act("/api/structures/" + (on ? "on" : "off"));
+    await act(`/api/${what}/` + (on ? "on" : "off"));
     await refreshList(); await refreshDetail(true);
   } catch (e) { notify("Could not change the setting: " + e.message); }
 }

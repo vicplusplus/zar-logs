@@ -127,14 +127,15 @@ this player dealt", so the encounter model (`crates/core/src/session.rs`) narrow
 
 - **Counted**: hits by a weapon or an ability (turrets and other deployables are abilities), and by things the
   player set off that are not enemies (an explosive barrel).
-- **Not counted**: hits whose source definition is an enemy. A Detonator's blast among other zombies and a
-  Multiplier clawing a turret both arrive credited to a player; they are counted in `stats.enemy_hits` and nowhere
-  else. A source the mission's tables do not have yet is held for up to two seconds of game time while the tables
-  are read again, then decided.
-- **Counted apart**: hits on anything that is not an enemy (crates, pods, barrels, level geometry, a turret caught
-  in the player's own blast). Every figure is kept twice, without and with these; a log stores the first in place
-  and the second under `with_structures`, and `session::view` turns a log, a list row or a live payload into
-  whichever the user asked for. So the switch works on missions already recorded.
+- **Not counted**: hits whose source definition is an enemy and that are no explosion. A Multiplier clawing a
+  turret arrives credited to a player; it is counted in `stats.enemy_hits` and nowhere else. A source the mission's
+  tables do not have yet is held for up to two seconds of game time while the tables are read again, then decided.
+- **Counted apart**, two kinds: hits on anything that is not an enemy ("structures": crates, pods, barrels, level
+  geometry, a turret caught in a blast), and hits by an enemy that carry the game's explosion flag ("blasts": a
+  Detonator going off among other zombies, `stats.blast_hits`). Every figure is kept four times, for each choice
+  of the two (`session::Counted`); a log stores the one with neither in place and the other three under `views`,
+  and `session::view` turns a log, a list row or a live payload into whichever the user asked for. So the switches
+  work on missions already recorded. The view of a boss never has blasts in it.
 
 The game's own damage counter (shown in the capture note under a log) counts weapon damage with structures and
 nothing from abilities or deployables. It is a check on the decoder, not the figure shown.
@@ -145,7 +146,8 @@ One file per mission in the logs folder, `enc-<id>_<map>_<mode>_<difficulty>.jso
 `summary` (the list row), `detail` (everything the page shows) and `hits` (one row per counted hit). The id is the
 local start time; the rest of the name is for people. `index.json` is a cache of the summaries and is rebuilt from
 the files whenever they disagree. `detail.format` is the log format (`session::FORMAT`); a log of an older format
-is shown as recorded and is not converted.
+is shown as recorded and is not converted: format 7 (version 0.1) has one set of figures with structures and
+enemy hits in them, format 8 (0.2.0) has structures apart under `with_structures` and no enemy hits at all.
 
 An imported log (`store::import`) is another person's file and is handled as untrusted: it must be a whole log
 with a usable id and a format this version knows, every rendered build in it is cut back to the raw loadout and
@@ -172,8 +174,8 @@ A build is rendered when the mission is recorded and saved with the log. A log t
 ## Known gaps
 
 - Windows only. Not signed, no automatic updates.
-- The export and import dialogs and "Show file" are thin wrappers over Windows' own dialogs and are not covered
-  by a test; what they call (`store::import`, copying a log) is.
+- The import dialog and "Show in folder" are thin wrappers over Windows' own file dialog and Explorer and are not
+  covered by a test; what the dialog's answer goes to (`store::import`) is.
 - Who gave a status effect is read (`giver_entity_id`) but only used to rule a teammate out. An effect the game
   applies to everyone (the invulnerability at the end of a mission) is still attributed to a teammate's ability
   when a teammate has an ability that applies the same effect set.

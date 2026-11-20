@@ -23,7 +23,7 @@ use zar_logs_namespack::SkillRow;
 pub type Definitions = HashMap<String, Map<String, Value>>;
 
 /// The version of the structure `render` produces; the page checks it.
-pub const VERSION: u64 = 6;
+pub const VERSION: u64 = 7;
 /// The definition classes `BuildData` reads names, texts and icon references from.
 pub const CLASSES: &[&str] = &["WeaponDefinitionSO", "ArmourPieceSO", "GearModEnhancementDefinitionSO", "AbilityDefinitionSO",
     "PassiveSkillDefinitionSO", "PlayerClassDefinitionSO"];
@@ -32,6 +32,11 @@ pub const ENUMS: &[&str] = &["ItemQuality", "GearType", "GearModType", "DamageTy
     "AbilityDescriptionParameterSource"];
 /// The member of `AbilityDescriptionParameterSource` for a number that is a parameter of one of the entry's bonuses.
 const FROM_BONUS: &str = "BonusParameter";
+/// How the game writes the value of a bonus as a stat line (`BonusHelpers.AppendBonusStats`), for the bonus types
+/// (`BonusType` members) that the enhancements without a description text have: a percentage, or a plain number.
+/// A bonus of any other type gets no line here rather than a guessed unit.
+const BONUS_PERCENT: &[&str] = &["MovementSpeed", "ReloadTime", "WeaponMagazineCapacity", "LiftUpTime", "WeaponChargeSpeedMultiplier"];
+const BONUS_PLAIN: &[&str] = &["ModPowerCapacity"];
 
 /// A number with up to `digits` decimals, trailing zeros dropped: 2.50 -> "2.5", 3.00 -> "3".
 fn num(v: f64, digits: usize) -> String {
@@ -268,6 +273,8 @@ pub struct BuildData {
     enhancement_numbers: Map<String, Value>,
     /// value of `AbilityDescriptionParameterSource.BonusParameter`
     from_bonus: Option<i64>,
+    /// `BonusType` member names by value
+    bonus_types: Vec<String>,
 }
 
 /// Adds the damage types that an armour definition carries a rating for, wherever in the object the ratings sit.
@@ -317,7 +324,7 @@ impl BuildData {
             qualities: members(&t.enums, "ItemQuality"), gear_types: members(&t.enums, "GearType"),
             mod_types: members(&t.enums, "GearModType"), damage_types: members(&t.enums, "DamageType"),
             deployables: members(&t.enums, "DeployableCategory"), enhancement_numbers: t.enhancement_numbers.clone(),
-            from_bonus: t.enums["AbilityDescriptionParameterSource"][FROM_BONUS].as_i64() })
+            from_bonus: t.enums["AbilityDescriptionParameterSource"][FROM_BONUS].as_i64(), bonus_types: members(&t.enums, "BonusType") })
     }
 
     /// Straight from the installed game (reads its files). Returns the tables too, for a caller that stores them.
@@ -439,7 +446,25 @@ impl BuildData {
                     desc = filled;
                 }
             }
-            out.insert("enh".into(), json!({ "name": name, "desc": desc, "icon": d.map(|d| self.icon(d.get("icon"))).unwrap_or(Value::Null) }));
+            // Some enhancements have no description in the game: what they do is a plain bonus (Weapon Sling: lift-up
+            // time), which the game shows as a stat line. The same lines here: the bonus's own label, and its first
+            // parameter at the rank the mod's quality gives.
+            let mut stats: Vec<Value> = Vec::new();
+            for bonus in d.filter(|_| desc.is_empty()).and_then(|d| d.get("bonuses")).and_then(Value::as_array).into_iter().flatten() {
+                let member = enum_field(bonus, "bonusType").and_then(|v| usize::try_from(v).ok()).and_then(|v| self.bonus_types.get(v)).map(String::as_str).unwrap_or("");
+                let Some(p) = bonus.get("parameters").and_then(Value::as_array).and_then(|list| list.first()) else { continue };
+                let value = zar_logs_namespack::parameter_at_rank(p, q, 0);
+                let shown = if BONUS_PERCENT.contains(&member) {
+                    format!("{}{}%", if value >= 0.0 { "+" } else { "-" }, num(value.abs(), 2))
+                } else if BONUS_PLAIN.contains(&member) {
+                    signed_flat(value)
+                } else {
+                    continue;
+                };
+                stats.push(json!([self.text_or(&format!("BonusStat_{member}"), || pretty(member)), shown]));
+            }
+            out.insert("enh".into(), json!({ "name": name, "desc": desc, "stats": stats,
+                                             "icon": d.map(|d| self.icon(d.get("icon"))).unwrap_or(Value::Null) }));
         }
         Value::Object(out)
     }

@@ -206,7 +206,7 @@ pub enum Imported {
     Rejected(String),
 }
 
-/// Adds a log file from somewhere else (one that another player exported) to the folder.
+/// Adds a log file from somewhere else (one that another player sent) to the folder.
 ///
 /// The file is somebody else's data and is treated as such. It has to be a whole log with a usable id. A build in
 /// it is cut back to the loadout it was made from, so that what is shown is rendered here from this machine's own

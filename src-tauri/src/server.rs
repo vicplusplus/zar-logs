@@ -6,9 +6,10 @@
 //!   /api/live, /api/stream  capture status and the mission in progress (once, or as server-sent events)
 //!   /overlay                the in-game overlay's page        /api/overlay/toggle   show / hide it (POST)
 //!   /api/open/<name>        open one of the links of `LINKS` in the default browser (POST)
-//!   /api/encounter/<id>/export, /reveal    save a copy where the user says; show the file in Explorer (POST)
+//!   /api/encounter/<id>/reveal    show the log's file in Explorer, selected (POST)
 //!   /api/import             add logs from files the user picks (POST)
 //!   /api/structures/on, /off    whether damage to structures is counted in what the pages show (POST)
+//!   /api/blasts/on, /off        the same for the blasts of enemies that explode (POST)
 //!
 //! Everything that changes or does something is a POST or DELETE and must carry the header `X-Zar-Logs`: a page
 //! of some other site open in a browser cannot send that to this server, so only the app's own pages can ask.
@@ -109,10 +110,12 @@ fn handle(app: &App, req: Request) {
             }
         }
         (Method::Post, "/api/overlay/toggle") => json(&serde_json::json!({ "overlay": app.set_overlay(!app.overlay_on()) })),
-        (Method::Post, "/api/structures/on") => json(&serde_json::json!({ "structures": app.set_structures(true) })),
-        (Method::Post, "/api/structures/off") => json(&serde_json::json!({ "structures": app.set_structures(false) })),
+        (Method::Post, "/api/structures/on" | "/api/structures/off" | "/api/blasts/on" | "/api/blasts/off") => {
+            let mut parts = path["/api/".len()..].split('/');
+            let (what, on) = (parts.next().unwrap_or(""), parts.next() == Some("on"));
+            json(&serde_json::json!({ what: app.set_counted(what, on) }))
+        }
         (Method::Post, "/api/import") => json(&app.import()),
-        (Method::Post, _) if action("export").is_some() => json(&app.export(action("export").unwrap_or(""))),
         (Method::Post, _) if action("reveal").is_some() => json(&app.reveal(action("reveal").unwrap_or(""))),
         (Method::Get, "/api/encounters") => json(&app.encounters()),
         (Method::Get, "/api/live") => json(&app.live()),

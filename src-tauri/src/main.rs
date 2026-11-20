@@ -12,8 +12,8 @@
 //!                   (one folder per game version: layout, tables, names, pictures; see gamedata.rs)
 //!   ZARLOGS_PORT    port of the local server         config "port"    default 5175 (any free port when taken)
 //!   ZAR_GAME_DIR    the game's folder                default: found (running game, Steam libraries)
-//! config.json also keeps what the pages set: "overlay" (shown, position) and "structures" (count damage to
-//! structures in the figures shown; off by default).
+//! config.json also keeps what the pages set: "overlay" (shown, position), and "structures" and "blasts" (count
+//! damage to structures, and the blasts of enemies that explode, in the figures shown; both off by default).
 //! `--headless` runs without windows; `--prepare-only` only reads the game's files into the cache and exits.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -66,13 +66,13 @@ impl App {
             Some(c) if c.server_hits > 0 || last.is_none() => Some(c.live()),
             cur => last.clone().or_else(|| cur.map(|c| c.live())),
         };
-        let structures = self.structures_on();
+        let counted = self.counted();
         if let Some(e) = &mut enc {
-            session::view(e, structures);
+            session::view(e, counted);
         }
         json!({ "status": *self.status.lock().unwrap(), "version": self.store.version(),
                 "capture": *self.capture.lock().unwrap(), "encounter": enc, "place": place, "overlay": self.overlay_on(),
-                "structures": structures,
+                "structures": counted.structures, "blasts": counted.blasts,
                 "prep": *self.prep.lock().unwrap(),
                 // for the About page
                 "app": { "version": env!("CARGO_PKG_VERSION"), "repository": env!("CARGO_PKG_REPOSITORY"),
@@ -89,8 +89,8 @@ impl App {
             self.store.decorate(&mut row);
             rows.insert(0, row);
         }
-        let structures = self.structures_on();
-        rows.iter_mut().for_each(|row| session::view(row, structures));
+        let counted = self.counted();
+        rows.iter_mut().for_each(|row| session::view(row, counted));
         Value::Array(rows)
     }
 
@@ -105,7 +105,7 @@ impl App {
         };
         let mut d = live.or_else(|| self.store.detail(id))?;
         self.render_builds(&mut d);
-        session::view(&mut d, self.structures_on());
+        session::view(&mut d, self.counted());
         Some(d)
     }
 
@@ -113,19 +113,6 @@ impl App {
     /// The viewer's window, for a dialog to belong to (0 when there is none).
     fn owner(&self) -> isize {
         self.handle.get().and_then(|h| h.get_webview_window("main")).and_then(|w| w.hwnd().ok()).map_or(0, |h| h.0 as isize)
-    }
-
-    /// Asks where to save a copy of a log and saves it there.
-    pub fn export(&self, id: &str) -> Value {
-        let Some(from) = self.store.path_of(id) else { return json!({ "ok": false, "error": "that log is no longer there" }) };
-        let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        match dialogs::save_as(self.owner(), &name) {
-            None => json!({ "ok": false, "cancelled": true }),
-            Some(to) => match self.store.export(id, &to) {
-                Ok(()) => json!({ "ok": true, "path": to.display().to_string() }),
-                Err(e) => json!({ "ok": false, "error": e }),
-            },
-        }
     }
 
     /// Asks which log files to add, and adds them.
@@ -137,7 +124,7 @@ impl App {
         self.store.import(&files)
     }
 
-    /// Shows a log's file in Explorer.
+    /// Shows a log's file in Explorer, selected: that is how a log is shared (dragged from there).
     pub fn reveal(&self, id: &str) -> Value {
         json!({ "ok": self.store.path_of(id).is_some_and(|path| dialogs::reveal(&path)) })
     }
@@ -174,11 +161,16 @@ impl App {
     }
     pub fn overlay_on(&self) -> bool { self.config.lock().unwrap()["overlay"]["enabled"].as_bool().unwrap_or(true) }
 
-    /// Whether damage to structures (crates, pods, barrels, level geometry) is counted in the figures shown.
-    /// Off unless the user turns it on; both sets of figures are in every log, so this only changes the view.
-    pub fn structures_on(&self) -> bool { self.config.lock().unwrap()["structures"].as_bool().unwrap_or(false) }
-    pub fn set_structures(&self, on: bool) -> bool {
-        self.config.lock().unwrap()["structures"] = json!(on);
+    /// What the figures shown count besides the players' own damage to enemies: damage to structures (crates,
+    /// pods, barrels, level geometry) and the blasts of enemies that explode. Both off unless the user turns them
+    /// on; every log has the figures for each choice, so this only changes the view.
+    pub fn counted(&self) -> session::Counted {
+        let c = self.config.lock().unwrap();
+        session::Counted { structures: c["structures"].as_bool().unwrap_or(false), blasts: c["blasts"].as_bool().unwrap_or(false) }
+    }
+    /// Sets one of the two (`what` is "structures" or "blasts") and remembers it.
+    pub fn set_counted(&self, what: &str, on: bool) -> bool {
+        self.config.lock().unwrap()[what] = json!(on);
         self.save_config();
         on
     }

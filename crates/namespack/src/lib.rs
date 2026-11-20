@@ -62,6 +62,10 @@ mod skills;
 
 pub use dump::parse_dump;
 
+/// What a parameter of a passive bonus is worth at `rank` for a player at `level` (`PassiveBonusParameter.GetBonus`).
+/// A gear mod's enhancement has such parameters, with the quality of its mod as the rank and no level.
+pub fn parameter_at_rank(parameter: &Value, rank: i64, level: i64) -> f64 { bonus::at_rank(parameter, rank, level) }
+
 /// What a parameter of an ability upgrade's or enhancement's bonus is worth for a player at `level`.
 pub fn upgrade_parameter_at_level(parameter: &Value, level: i64) -> f64 { bonus::of_upgrade(parameter, level) }
 

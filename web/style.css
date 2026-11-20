@@ -372,8 +372,21 @@ h1 .diff { font-size: 11px; vertical-align: 4px; margin-left: 8px; }
 /* ---- app controls in the sidebar ---- */
 .btn.small { padding: 2px 8px; font-size: 12px; margin-top: 8px; }
 
-/* what the last export / import did */
+/* what the last import did */
 .notice { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;
   font-size: 13px; overflow-wrap: anywhere; }
 .side-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .side-head .btn.small { margin-top: 0; }
+
+/* "also count" switches above the party table: a tick box and its label, told apart by the tick, not by colour alone */
+.checks { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); }
+.check { display: inline-flex; align-items: center; gap: 6px; background: none; border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px 10px; cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+.check i { width: 13px; height: 13px; border: 1px solid var(--muted); border-radius: 3px; font-style: normal; font-size: 11px; line-height: 12px;
+  text-align: center; color: var(--text-primary); }
+.check.on { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
+.check:hover { background: var(--surface-2); }
+
+/* XP gained, at the right of a mission's title in the list */
+.enc-xp { margin-left: auto; flex: none; font-weight: 500; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.enc.art .enc-xp { color: #d6d5cf; }

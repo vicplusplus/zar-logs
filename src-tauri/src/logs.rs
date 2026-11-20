@@ -1,5 +1,5 @@
 //! The app's view of the logs folder (`zar_logs_core::store` has the files' format and names): listing, reading,
-//! deleting, exporting and importing logs, and the things a log is shown with that belong to this machine (pictures).
+//! deleting and importing logs, and the things a log is shown with that belong to this machine (pictures).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -75,12 +75,6 @@ impl Store {
         };
         zar_logs_core::store::sync_index(&self.logs); // drops the row of the log that is gone
         gone
-    }
-
-    /// Copies one log to a place the user chose.
-    pub fn export(&self, id: &str, to: &Path) -> Result<(), String> {
-        let from = self.path_of(id).ok_or("no such log")?;
-        std::fs::copy(&from, to).map(|_| ()).map_err(|e| format!("{}: {e}", to.display()))
     }
 
     /// Adds logs from files the user chose (see `zar_logs_core::store::import`): what became of each.

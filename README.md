@@ -53,10 +53,11 @@ each enemy resisted, and each player's build as the game's own cards show it.
 - **Damage for every player in the party**: total, DPS over the mission's time, share, crit rate, biggest hit and
   kills, and a chart of damage over time (DPS or cumulative), with the game's own mission timer next to it.
 - **Where the damage came from**: by weapon, ability, deployable and other sources, for each player.
-- **Counts what you dealt.** Damage to enemies is what the figures show. Damage to structures (crates, pods,
-  barrels, level geometry) is recorded next to it and left out unless you switch it on: "Enemies only" / "With
-  structures" above the party table. What an enemy does itself is never yours: the game credits a Detonator's
-  blast, or a zombie clawing your turret, to a player, and zar-logs leaves that out.
+- **Counts what you dealt.** Your damage to enemies is what the figures show. Two more kinds of hit are recorded
+  next to it and left out unless you tick them under "Also count" above the party table: damage to **structures**
+  (crates, pods, barrels, level geometry), and **enemy explosions**, the blasts of enemies that explode
+  (Detonators), which the game credits to a player. An enemy's ordinary attacks are never yours: the game also
+  credits a zombie clawing your turret to a player, and zar-logs leaves that out.
 - **Who took it**: damage by enemy type, with each enemy's real health, shield and resistances, and how much of
   your damage it resisted.
 - **Bosses**: portrait, defences, and the chart narrowed to that boss from the moment it appears until it dies.
@@ -67,9 +68,9 @@ each enemy resisted, and each player's build as the game's own cards show it.
   show them, with the numbers worked out for that exact loadout (damage, explosion damage, crit, clip, reload,
   mod power, resistances).
 - **Mission details**: map, mode, difficulty, the Tough modifier, won / lost / left, kills, and the XP you gained.
-- **Share a mission.** "Export…" saves a copy of a mission's log wherever you say, to send to someone; "Import…"
-  adds logs others sent you to your list. A log is one small file named after its mission, for example
-  `enc-20261118-143424_Geode-Cavern_Rescue_Easy.json.gz`.
+- **Share a mission.** A mission's log is one small file named after it, for example
+  `enc-20261118-143424_Geode-Cavern_Rescue_Easy.json.gz`. "Show in folder" opens the logs folder with that file
+  selected, to drag wherever you want to send it; "Import…" adds logs others sent you to your list.
 - **Keeps up with game updates**: after an update it re-reads what it needs from your installed game by itself.
 - **Everything stays on your computer.** No account, no upload, no internet connection.
 
@@ -163,9 +164,10 @@ Prefer to build it yourself? See [CONTRIBUTING.md](CONTRIBUTING.md); it is one c
 ## Settings
 
 There is nothing you have to set. The overlay's on / off switch is in the viewer's sidebar, and its position is
-saved when you drag it. Whether damage to structures is counted is the switch above the party table; it changes
-what is shown everywhere (the list, the overlay) and can be flipped at any time, for old missions too, because
-both sets of figures are in every log. Missions recorded by version 0.1 have only the figures with structures.
+saved when you drag it. Whether damage to structures and enemy explosions are counted are the two tick boxes
+above the party table; they change what is shown everywhere (the list, the overlay) and can be flipped at any
+time, for missions already recorded too, because every log holds the figures for each choice. Missions recorded
+by version 0.1 have only the figures with both in them, and those recorded by 0.2.0 have no enemy explosions.
 
 For the rest there is a small file, `config.json`, in the data folder
 (`%LOCALAPPDATA%\com.vicplusplus.zar-logs`). Close zar-logs
@@ -178,15 +180,16 @@ before editing it.
 | port of the local page (your machine only) | `"port": 5175` | 5175, or any free port |
 | overlay shown, and where | `"overlay"` (written by the app) | shown |
 | count damage to structures | `"structures": true` (written by the app) | not counted |
+| count enemy explosions | `"blasts": true` (written by the app) | not counted |
 
 The game is found automatically: through the running game, or your Steam libraries on any drive. If it is
 somewhere unusual, set the environment variable `ZAR_GAME_DIR` to the game's folder. The data folder itself can be
 moved with the environment variable `ZARLOGS_DATA`.
 
-To delete one recorded mission, open it in the viewer and press "Delete". "Show file" opens the logs folder with
-that mission's file selected.
+To delete one recorded mission, open it in the viewer and press "Delete". "Show in folder" opens the logs folder
+with that mission's file selected.
 
-A log you export holds the display names of the players in that mission, their loadouts and every hit; it does
+A log you send to someone holds the display names of the players in that mission, their loadouts and every hit; it does
 not hold account ids. A log you import is someone else's file: zar-logs checks that it is a log before adding it,
 marks it "Imported", and draws the builds in it from your own copy of the game rather than from the file.
 
