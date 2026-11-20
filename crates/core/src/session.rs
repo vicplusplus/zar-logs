@@ -105,6 +105,10 @@ pub struct Agg {
     dodged: u64,
     pub hits: u64,
     pub crits: u64,
+    /// hits and crits of the player's weapons alone: what a crit rate is taken over (a turret, an ability or a
+    /// barrel does not crit, and would only water the rate down)
+    weapon_hits: u64,
+    weapon_crits: u64,
     kills: u64,
     max: f64,
     min: f64,
@@ -115,7 +119,7 @@ pub struct Agg {
 
 impl Default for Agg {
     fn default() -> Agg {
-        Agg { dmg: 0.0, crit_dmg: 0.0, dot: 0.0, shield: 0.0, over: 0.0, pre: 0.0, unc: 0.0, dodged: 0, hits: 0, crits: 0,
+        Agg { dmg: 0.0, crit_dmg: 0.0, dot: 0.0, shield: 0.0, over: 0.0, pre: 0.0, unc: 0.0, dodged: 0, hits: 0, crits: 0, weapon_hits: 0, weapon_crits: 0,
             kills: 0, max: 0.0, min: f64::INFINITY, types: [0.0; TYPE_SLOTS], first: None, last: None }
     }
 }
@@ -134,6 +138,10 @@ impl Agg {
         if h.fl & c.hit_crit != 0 {
             self.crits += 1;
             self.crit_dmg += dmg;
+        }
+        if h.at == c.at_weapon {
+            self.weapon_hits += 1;
+            self.weapon_crits += (h.fl & c.hit_crit != 0) as u64;
         }
         if h.fl & c.hit_dot != 0 {
             self.dot += dmg;
@@ -167,6 +175,8 @@ impl Agg {
         self.dodged += o.dodged;
         self.hits += o.hits;
         self.crits += o.crits;
+        self.weapon_hits += o.weapon_hits;
+        self.weapon_crits += o.weapon_crits;
         self.kills += o.kills;
         self.max = max_f(self.max, o.max);
         self.min = min_f(self.min, o.min);
@@ -190,6 +200,7 @@ impl Agg {
     fn json(&self) -> Map<String, Value> {
         let v = json!({
             "damage": self.dmg, "hits": self.hits, "crits": self.crits, "crit_damage": self.crit_dmg, "max": self.max,
+            "weapon_hits": self.weapon_hits, "weapon_crits": self.weapon_crits,
             "min": if self.min.is_infinite() { 0.0 } else { self.min }, "kills": self.kills, "dot": self.dot,
             "shield": self.shield, "overkill": self.over, "first": self.first, "last": self.last,
             "pre": rnd(self.pre, 1), "dodged": self.dodged, "mitigated": self.mitigated(), "types": self.types_json(),
@@ -1223,7 +1234,7 @@ impl Encounter {
             (a.dmg, json!({
                 "cid": p.cid, "name": p.name, "cls": p.cls, "sub": p.sub, "local": p.local, "damage": a.dmg,
                 "dps": a.dmg / ct, "share": if party != 0.0 { a.dmg / party } else { 0.0 },
-                "crit": if a.hits != 0 { a.crits as f64 / a.hits as f64 } else { 0.0 }, "hits": a.hits,
+                "crit": if a.weapon_hits != 0 { a.weapon_crits as f64 / a.weapon_hits as f64 } else { 0.0 }, "hits": a.hits,
                 "taken": p.taken, "downs": p.downs,
             }))
         }).collect();
@@ -1871,7 +1882,14 @@ mod tests {
             killing(&c, hit(&c, 2.2, weapon, CRATE, 100.0), true),
             hit(&c, 2.3, weapon, ZOMBIE, 100.0),
         ]);
+        // the crit rate is over weapon hits: an ability (a turret is one) does not crit and is left out of it
+        let crit = |rec: Rec| match rec { Rec::Hit(mut h) => { h.fl |= c.hit_crit; Rec::Hit(h) }, other => other };
+        t.feed(&[crit(hit(&c, 2.4, weapon, ZOMBIE, 100.0)), hit(&c, 2.5, (c.at_ability, 0xAB), ZOMBIE, 10.0), hit(&c, 2.6, (c.at_ability, 0xAB), ZOMBIE, 10.0)]);
         let d = t.cur.as_ref().unwrap().detail(&t.resolver);
+        let p = &d["players"][0];
+        assert_eq!((p["hits"].as_u64(), p["crits"].as_u64(), p["weapon_hits"].as_u64(), p["weapon_crits"].as_u64()), (Some(6), Some(1), Some(4), Some(1)));
+        assert_eq!(t.cur.as_ref().unwrap().live()["players"][0]["crit"].as_f64(), Some(0.25));
+        assert!(d["targets"][0]["weapon_hits"].as_u64().is_some_and(|hits| hits >= 1));
         assert_eq!((d["players"][0]["kills"].as_u64(), d["players"][0]["sources"][0]["kills"].as_u64()), (Some(1), Some(1)));
         assert_eq!(d["views"]["structures"]["players"]["1"]["kills"].as_u64(), Some(1));
     }

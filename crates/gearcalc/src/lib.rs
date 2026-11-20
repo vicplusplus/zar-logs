@@ -331,6 +331,16 @@ impl Gear {
         self.weapons.enhancement_effect(name, quality)
     }
 
+    /// How many upgrade steps a weapon can take: `maxUpgradeSteps` of its crafting table.
+    pub fn weapon_upgrade_steps(&self, id: &str) -> Option<i64> {
+        self.weapons.upgrade_steps(id)
+    }
+
+    /// The same for an armour piece.
+    pub fn armour_upgrade_steps(&self, name: &str) -> Option<i64> {
+        Some(self.armour.as_ref()?.get(name)?.upgrade_steps())
+    }
+
     /// An armour piece by asset name.
     pub fn armour_piece(&self, name: &str) -> Option<PieceInfo> {
         Some(self.armour.as_ref()?.get(name)?.info())

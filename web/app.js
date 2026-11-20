@@ -136,6 +136,18 @@ function onWhom(lanes, who) {
   return lanes.map(ln => ln.group === "Abilities" ? ln : Object.assign({}, ln, { groupLabel: `${ln.group} on ${who}` }));
 }
 function whoIs(p) { return p.local ? "you" : p.name; }
+// A crit rate is over the hits of the player's weapons: a turret, an ability or a barrel does not crit, and counting
+// its hits would only water the rate down. A log from before weapon hits were counted apart gives them through the
+// player's weapon sources; a target row of such a log only has all hits.
+function critRate(x) {
+  if (x.weapon_hits != null) return x.weapon_hits ? x.weapon_crits / x.weapon_hits : 0;
+  const weapons = (x.sources || []).filter(src => src.kind === "weapon");
+  if (weapons.length) {
+    const hits = weapons.reduce((a, src) => a + src.hits, 0);
+    return hits ? weapons.reduce((a, src) => a + src.crits, 0) / hits : 0;
+  }
+  return x.hits ? x.crits / x.hits : 0;
+}
 // Kills in the tables of such a log are final blows, which counts an enemy that splits (Multipliers) at every split.
 function oldKillsNote(d, p, rows) {
   const sum = rows.reduce((a, x) => a + (x.kills || 0), 0);
@@ -369,7 +381,7 @@ function partyCard(d) {
         p.local ? h("span", { class: "tag" }, "you") : null),
         h("div", { class: "meter" }, h("i", { style: `width:${(p.damage / top * 100).toFixed(1)}%;background:${color}` }))),
       h("td", null, fmt(p.damage)), h("td", null, fmt(p.dps)), h("td", null, pct(p.share)),
-      h("td", null, pct(p.hits ? p.crits / p.hits : 0)), h("td", null, fmt(p.max)), h("td", null, fmtFull(p.kills_native || p.kills)),
+      h("td", null, pct(critRate(p))), h("td", null, fmt(p.max)), h("td", null, fmtFull(p.kills_native || p.kills)),
       h("td", null, fmt(p.taken)), h("td", null, fmt(p.healed)), h("td", null, String(p.downs)));
   });
   // Two kinds of hit are in every log next to the players' own damage to enemies, and each can be counted or
@@ -390,7 +402,7 @@ function partyCard(d) {
       h("div", { class: "card-sub" }, "Select a player to see their breakdown below" + note)),
       h("div", { class: "controls" }, pick)),
     h("div", { class: "scroll-x" }, h("table", null,
-      h("thead", null, h("tr", null, ["Player", "Damage", "DPS", "Share", "Crit rate", "Max hit", "Kills", "Taken", "Healed", "Downs"].map(t => h("th", null, t)))),
+      h("thead", null, h("tr", null, ["Player", "Damage", "DPS", "Share", "Crit rate", "Max hit", "Kills", "Taken", "Healed", "Downs"].map(t => h("th", t === "Crit rate" ? { title: "Crits out of the hits of the player's weapons. Turrets, abilities and other sources do not crit and are left out." } : null, t)))),
       h("tbody", null, rows))));
 }
 
@@ -531,7 +543,7 @@ function playerCard(d) {
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("div", null,
       h("div", { class: "card-title" }, h("span", { class: "namecell" }, h("i", { class: "swatch", style: `background:${playerColor(d, p.cid)}` }), p.name)),
-      h("div", { class: "card-sub" }, `${fmt(p.damage)} damage · ${fmt(p.dps)} DPS · ${fmtFull(p.hits)} hits · ${pct(p.hits ? p.crits / p.hits : 0)} crit`))),
+      h("div", { class: "card-sub" }, `${fmt(p.damage)} damage · ${fmt(p.dps)} DPS · ${fmtFull(p.hits)} hits · ${pct(critRate(p))} weapon crit rate`))),
     h("div", { class: "tabs", role: "tablist" }, tabs.map(([k, label]) =>
       h("button", { class: k === ui.tab ? "on" : "", role: "tab", "aria-selected": k === ui.tab, onclick: () => { ui.tab = k; renderMain(); } }, label))),
     body);
@@ -604,7 +616,7 @@ function targetsTab(d, p) {
         h("td", { class: "wide" }, name,
           h("div", { class: "meter" }, h("i", { style: `width:${(x.damage / top * 100).toFixed(1)}%;background:${color}` }))),
         h("td", null, fmt(x.damage)), h("td", null, pct(p.damage ? x.damage / p.damage : 0)), h("td", null, fmtFull(x.hits)),
-        h("td", null, fmt(x.hits ? x.damage / x.hits : 0)), h("td", null, fmt(x.max)), h("td", null, pct(x.hits ? x.crits / x.hits : 0)),
+        h("td", null, fmt(x.hits ? x.damage / x.hits : 0)), h("td", null, fmt(x.max)), h("td", null, pct(critRate(x))),
         h("td", null, h("span", { class: "resisted" }, res.map(([n]) => h("i", { title: n, style: `background:${DTYPE_COLOR[n] || "var(--muted)"}` })),
           x.mitigated == null ? "–" : (x.mitigated_est ? "≈" : "") + pct(x.mitigated))),
         h("td", null, fmtFull(x.kills)));
@@ -732,10 +744,12 @@ function gearTile(g, opts) {
   const el = h("div", { class: "gtile" + (o.wide ? " wide" : ""), style: `--qc:${QVAR[g.quality] || QVAR[0]}`, "aria-label": `${g.qname} ${g.name}` },
     h("div", { class: "gtile-slot" }, g.slot), h("i", { class: "gtile-corner" }),
     g.icon ? h("div", { class: "gtile-img" }, icon(g.icon)) : null,
-    h("div", { class: "gtile-name" }, g.name), pips(g.level || 0, 5));
+    h("div", { class: "gtile-name" }, g.name), g.max_level ? pips(g.level || 0, g.max_level) : null);
+  // an upgrade level only where the item can be upgraded (weapons and armour; not deployables), out of the steps
+  // its crafting table has
   return hoverCard(el, () => h("div", { class: "tcard" },
     h("div", { class: "tcard-bar", style: `background:${QVAR[g.quality] || QVAR[0]}` }, g.qname),
-    h("div", { class: "tcard-title" }, h("span", null, g.name), h("b", null, `upgrade ${g.level || 0}/5`)),
+    h("div", { class: "tcard-title" }, h("span", null, g.name), g.max_level ? h("b", null, `upgrade ${g.level || 0}/${g.max_level}`) : null),
     o.extra ? h("div", { class: "mod-line" }, o.extra) : null,
     g.stats && g.stats.length ? statList(g.stats) : null));
 }
@@ -756,7 +770,7 @@ function stateLine(text, on) {
 function buildTab(d, p) {
   const b = p.build;
   if (!b) return h("div", { class: "empty" }, "No build captured for this player.");
-  if (b.version !== 7) return h("div", { class: "empty" }, b.note || "This log was recorded by an older version of the meter; its build cannot be shown in this layout.");
+  if (b.version !== 8) return h("div", { class: "empty" }, b.note || "This log was recorded by an older version of the meter; its build cannot be shown in this layout.");
   const c = b.character, a = b.armour;
   const out = [h("div", { class: "bhead" }, h("span", { class: "name" }, c.name), h("span", { class: "sub" }, [c.cls, c.sub].filter(Boolean).join(" · ")),
     h("span", { class: "tag" }, `Level ${c.level}`))];

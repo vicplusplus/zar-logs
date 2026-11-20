@@ -23,7 +23,7 @@ use zar_logs_namespack::SkillRow;
 pub type Definitions = HashMap<String, Map<String, Value>>;
 
 /// The version of the structure `render` produces; the page checks it.
-pub const VERSION: u64 = 7;
+pub const VERSION: u64 = 8;
 /// The definition classes `BuildData` reads names, texts and icon references from.
 pub const CLASSES: &[&str] = &["WeaponDefinitionSO", "ArmourPieceSO", "GearModEnhancementDefinitionSO", "AbilityDefinitionSO",
     "PassiveSkillDefinitionSO", "PlayerClassDefinitionSO"];
@@ -493,7 +493,8 @@ impl BuildData {
             icon = self.icon(wd.and_then(|d| d.get("ingameIcon")));
         }
         let mut out = match json!({ "slot": slot, "empty": false, "name": pretty(id), "category": "", "dtype": "", "quality": q,
-            "qname": self.quality_name(q), "level": lvl, "mod_power": Self::mod_power(&mods), "mods": mods, "stats": [], "icon": icon }) {
+            "qname": self.quality_name(q), "level": lvl, "max_level": self.gear.weapon_upgrade_steps(id),
+            "mod_power": Self::mod_power(&mods), "mods": mods, "stats": [], "icon": icon }) {
             Value::Object(o) => o, _ => unreachable!() };
         let Some(w) = self.gear.weapon(id) else { return Value::Object(out) };
         out.insert("name".into(), json!(w.display));
@@ -541,6 +542,7 @@ impl BuildData {
             let (q, lvl) = (i(g, "quality"), i(g, "level"));
             let ad = self.def("ArmourPieceSO", id);
             let mut card = match json!({ "slot": slot, "empty": false, "name": pretty(id), "quality": q, "qname": self.quality_name(q), "level": lvl,
+                "max_level": self.gear.armour_upgrade_steps(id),
                 "stats": [], "icon": self.icon(ad.and_then(|d| d.get("menuIcon"))) }) { Value::Object(o) => o, _ => unreachable!() };
             if let (Some(pc), Some(r)) = (self.gear.armour_piece(id), self.gear.armour_resistance(id, q as u8, lvl as i32)) {
                 if let Some(d) = ad {
@@ -608,8 +610,11 @@ impl BuildData {
         if icon.is_null() {
             icon = self.icon(d.and_then(|d| d.get("ingameIcon")));
         }
-        // the damage type belongs to the deployed entity, not the throw item
-        json!({ "slot": kind, "empty": false, "name": name, "dtype": "", "quality": q, "qname": self.quality_name(q), "level": i(g, "level"), "icon": icon })
+        // The damage type belongs to the deployed entity, not the throw item. And a deployable has no upgrade level:
+        // the game only upgrades weapons and armour (`Gear.IsUpgradable` goes by the gear type), although a
+        // deployable's definition points at a crafting table like theirs.
+        json!({ "slot": kind, "empty": false, "name": name, "dtype": "", "quality": q, "qname": self.quality_name(q), "level": null,
+                "max_level": null, "icon": icon })
     }
 
     // ---- abilities and skills ----

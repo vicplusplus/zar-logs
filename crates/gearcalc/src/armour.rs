@@ -68,6 +68,9 @@ pub(crate) fn pieces(
 }
 
 impl Piece {
+    /// How many upgrade steps the piece can take.
+    pub fn upgrade_steps(&self) -> i64 { self.table.max_steps }
+
     pub fn info(&self) -> PieceInfo {
         self.info.clone()
     }

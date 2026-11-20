@@ -371,6 +371,11 @@ impl Weapons {
         }
     }
 
+    /// How many upgrade steps a weapon can take; `None` for a weapon without a readable crafting table.
+    pub fn upgrade_steps(&self, id: &str) -> Option<i64> {
+        Some(self.weapons.get(id)?.crafting.as_ref()?.max_steps)
+    }
+
     pub fn info(&self, id: &str) -> Option<WeaponInfo> {
         self.weapons.get(id).map(|w| w.info.clone())
     }

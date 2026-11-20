@@ -95,9 +95,28 @@ pub(crate) fn decode(s: &str) -> String {
     s.replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&").replace("&quot;", "\"")
 }
 
-/// A localisation text as one line: entities decoded, every run of white space one space, none at the ends.
+/// A localisation text as one line: entities decoded, every run of white space one space, none at the ends, and a
+/// doubled full stop made one (the game's texts have a few: "Triples Cooldown.."). Three or more are an ellipsis
+/// and stay.
 pub(crate) fn clean(s: &str) -> String {
-    decode(s).split(is_space).filter(|word| !word.is_empty()).collect::<Vec<_>>().join(" ")
+    let line = decode(s).split(is_space).filter(|word| !word.is_empty()).collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut at = 0;
+    while at < chars.len() {
+        let run = chars[at..].iter().take_while(|c| **c == '.').count();
+        match run {
+            0 => {
+                out.push(chars[at]);
+                at += 1;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('.', if run == 2 { 1 } else { run }));
+                at += run;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -122,6 +141,7 @@ mod tests {
     #[test]
     fn texts() {
         assert_eq!(clean("  a &amp;gt; b\r\n\t&lt;c&gt; &quot;d&quot; "), "a &gt; b <c> \"d\"");
+        assert_eq!(clean("Triples Cooldown.. Wait... 1.5 secs."), "Triples Cooldown. Wait... 1.5 secs.");
         let v = |s: &str| serde_json::from_str::<Value>(s).unwrap();
         assert_eq!([text(&v("10000")), text(&v("2.50")), whole(&v("3.9")), whole(&v("20"))], ["10000", "2.5", "3", "20"]);
     }
