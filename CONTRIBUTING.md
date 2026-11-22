@@ -152,6 +152,11 @@ before format 10 a kill was any final blow on an enemy, where it is now the game
 last of a lineage (an enemy that splits is not one). The page corrects what it can of older logs when it shows
 them (`TIDY_FORMAT` in `web/app.js`).
 
+From 0.3.5 a log says which game version it was played on: `game` in the summary and the detail, `{id, build}`
+(the version id of the cache folder and Steam's build number). For an older log the app takes the version whose
+files were the newest installed before the log's start, among the versions it still has a cache folder for, and
+marks it `inferred`. The Records page is kept per game version, so a balance patch starts the records afresh.
+
 An imported log (`store::import`) is another person's file and is handled as untrusted: it must be a whole log
 with a usable id and a format this version knows, every rendered build in it is cut back to the raw loadout and
 rendered again from the local game data, and the page only ever loads pictures from the app's own cache.

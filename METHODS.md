@@ -108,6 +108,30 @@ experience gained is read.
 the `Level` component of each scene's asset bundle with UnityPy (research tooling, not part of this repository);
 the app reads the same field from the loaded level in memory.
 
+**Mission level and enemy strength.** Found by name first, then read in the code. A search of the metadata's field
+and method names for "level", "tough", "modifier" and "difficulty" (with a throwaway parser of the type and field
+tables) turned up `WorldDataBuildParams.averagePlayerLevel`, `averagePlayerLevelUnmodded` and `playerCount`,
+`LevelSet.toughPlayerLevelOffset`, and `WorldDifficultySettings` with `numPlayersDifficultyMultiplier`,
+`numPlayersObjectiveMultiplier` and `baseDifficultyCurveDefinition` (a `DifficultyCurveDefinitionSO`). Then, with the
+capstone scripts of section 2, `WorldController::PrepareWorldDataBuilder`, `WorldLoadDataBuilder::BuildData` and the
+three `WorldDifficultySettings` getters were read:
+
+- the mission level is the sum of the players' `PlayerInfo.level` divided by their count in integer division (so
+  rounded down); with the Tough modifier the level's `LevelSet.toughPlayerLevelOffset` is added. Nothing weights it
+  and nothing caps it there;
+- the four multipliers in the load data's header are: the base curve at that level; the curve at that level times
+  `numPlayersDifficultyMultiplier[players − 1]` (what enemy stats are scaled by); that team multiplier alone; and
+  `numPlayersObjectiveMultiplier[players − 1]`. Easy, Medium and Hard are not in them.
+
+The values were read from the assets with the repository's own bundle reader (a throwaway variant that also reads
+MonoBehaviours of a given script): `toughPlayerLevelOffset` 5, team multipliers 1, 1.7, 2.5, 3 for one to four
+players, and a curve of 101 levels (×12.08 at level 60). Bosses and some enemies also have their own per-player
+table (`EntityDefinitionSO.customPerPlayerDifficultyMultiplier`), which the boss health in the logs shows: the same
+boss at level 56 had 240K health solo and 599K with two players on Hard. The app reads `averagePlayerLevel` at
+mission start (every log since 0.1 has it, `mission.avg_level`) and, from 0.3.5, the header's four multipliers
+(`scaling`); for older logs it works the multipliers out from the tables (`logs::Rules`), which match all 18 logs on
+the developer's machine.
+
 **Things no file states**, taken as assumptions: the member order of the C++ `std::vector` in the native library
 (Microsoft's ABI; only its size is confirmed by the metadata) and that the resistance tables hold 32-bit floats.
 

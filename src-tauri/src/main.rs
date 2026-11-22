@@ -94,6 +94,11 @@ impl App {
         Value::Array(rows)
     }
 
+    /// The Records page: the best missions of this machine's own characters, with the figures counted as the
+    /// pages count them.
+    /// `version`: a game version id, "all", or None for the one being played.
+    pub fn records(&self, version: Option<&str>) -> Value { self.store.records(self.counted(), version) }
+
     pub fn detail(&self, id: &str) -> Option<Value> {
         let live = {
             let t = self.tracker.lock().unwrap();
@@ -106,7 +111,25 @@ impl App {
         let mut d = live.or_else(|| self.store.detail(id))?;
         self.render_builds(&mut d);
         session::view(&mut d, self.counted());
+        self.mark_power_weapons(&mut d);
         Some(d)
+    }
+
+    /// A weapon a player picked up from a supply crate (a power weapon) is not in their loadout: its damage source
+    /// gets the weapon's card, read from the game's data.
+    fn mark_power_weapons(&self, detail: &mut Value) {
+        let Some(data) = self.builds.read().unwrap().clone() else { return };
+        for p in detail.get_mut("players").and_then(Value::as_array_mut).into_iter().flatten() {
+            for src in p.get_mut("sources").and_then(Value::as_array_mut).into_iter().flatten() {
+                if src.get("kind").and_then(Value::as_str) != Some("weapon") {
+                    continue;
+                }
+                let asset = src.get("asset").and_then(Value::as_str).unwrap_or("").to_string();
+                if let Some(card) = data.power_weapon(&asset) {
+                    src["power"] = card;
+                }
+            }
+        }
     }
 
     // ---- sharing logs ----
@@ -237,6 +260,9 @@ fn capture(app: Arc<App>) {
         };
         // the layout belongs to the build that is running: derived from its files when the cache has none
         let game = proc.image_path().and_then(|p| p.parent().map(PathBuf::from));
+        // every mission recorded from here on says which game version it was played on (records are per version)
+        let version = game.as_deref().and_then(|g| zar_logs_core::paths::game_version(g).ok());
+        app.tracker.lock().unwrap().game = version.map_or(Value::Null, |v| json!({ "id": v.id, "build": v.build }));
         let lay = game.clone().ok_or_else(|| "the game's folder is unknown".to_string())
             .and_then(|game| gamedata::ensure_layout(&app.store.cache, &game, &|what| app.set_prep(what)));
         if !app.preparing.load(std::sync::atomic::Ordering::SeqCst) {

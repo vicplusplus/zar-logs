@@ -308,7 +308,7 @@ function timelineChart(host, opts) {
     if (lv && lv.values[i] != null) out.push({ name: lv.name, color: lv.color, value: `${fmt(lv.values[i])} · ${pct(lv.values[i] / (lv.max || 1), 0)}` });
     // every named lane with its state at this moment: active ones first and in colour, the rest dimmed
     const on = ln => ln.intervals.some(([a, z]) => t >= a && t <= Math.max(z, a + 0.25));
-    const shown = lanes.filter(ln => ln.group !== "Other effects" || on(ln));
+    const shown = lanes.filter(ln => !ln.quiet || on(ln));
     const act = shown.filter(on), idle = shown.filter(ln => !on(ln));
     if (shown.length) out.push({ rule: true });
     for (const ln of act.slice(0, 12)) out.push({ name: (ln.indent ? "· " : "") + ln.name, dot: ln.color, value: "active" });

@@ -11,6 +11,8 @@
   --on-fill-4: #0b0b0b;
   /* item rarity (Common .. Legendary), used for corners and frames only, never for text */
   --q0: #8d8c86; --q1: #2e9b55; --q2: #2a78d6; --q3: #7d5fd3; --q4: #d9900f;
+  /* power weapons, picked up from supply crates: red, as the game shows them */
+  --power: #d23c3c;
   /* damage types, as swatches and bars beside their names */
   --dt-physical: #8d8c86; --dt-thermal: #e0612a; --dt-cryo: #3aa3d9; --dt-energy: #d9a400; --dt-corrosion: #4f9a2a; --dt-void: #8a5bd6;
   /* tiles that carry the game's white icons stay dark in both themes */
@@ -43,7 +45,7 @@ body { margin: 0; background: var(--page); color: var(--text-primary);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 button { font: inherit; color: inherit; }
 
-.app { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100%; }
+.app { display: grid; grid-template-columns: 320px minmax(0, 1fr); min-height: 100%; }
 .side { background: var(--surface-1); border-right: 1px solid var(--border); display: flex; flex-direction: column;
   position: sticky; top: 0; height: 100vh; }
 .brand { padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
@@ -71,6 +73,7 @@ button { font: inherit; color: inherit; }
 .side-foot b { color: var(--text-secondary); }
 .side-foot .btn { align-self: flex-start; }
 .about { max-width: 760px; }
+.about-head { margin-bottom: 16px; }
 .about h2 { font-size: 15px; font-weight: 650; margin: 0 0 8px; }
 .about p, .about li { font-size: 13px; line-height: 1.55; color: var(--text-primary); }
 .about p { margin: 0 0 8px; }
@@ -358,7 +361,9 @@ h1 .diff { font-size: 11px; vertical-align: 4px; margin-left: 8px; }
 .dtype.chip b { color: var(--text-primary); font-size: 13px; font-variant-numeric: tabular-nums; }
 .tgt-pic { flex: none; width: 24px; height: 24px; border-radius: 5px; background: var(--tile); display: grid; place-items: center; overflow: hidden; }
 .tgt-pic img { max-width: 22px; max-height: 22px; object-fit: contain; }
-.namecell.hov { cursor: help; border-radius: 4px; outline-offset: 2px; }
+.namecell.hov { cursor: default; border-radius: 4px; outline-offset: 2px; }
+.namecell.power .name { color: var(--power); }
+.namecell.power .sub { color: var(--power); opacity: .85; }
 .resisted { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
 .resisted i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 .tcard.def { max-width: 340px; }
@@ -387,6 +392,42 @@ h1 .diff { font-size: 11px; vertical-align: 4px; margin-left: 8px; }
 .check.on { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
 .check:hover { background: var(--surface-2); }
 
-/* XP gained, at the right of a mission's title in the list */
-.enc-xp { margin-left: auto; flex: none; font-weight: 500; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+/* XP gained, on the bottom line of a mission in the list */
+.enc-xp { font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .enc.art .enc-xp { color: #d6d5cf; }
+
+/* mission level: what the game made of the team's levels */
+.diff.d-level { background: #3a5a78; letter-spacing: .03em; text-transform: none; }
+/* the Records page's button, at the top of the sidebar */
+.records-btn { display: block; width: 100%; margin-top: 10px; font-weight: 600; text-align: left; padding: 8px 12px; }
+.records-btn::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px;
+  background: var(--series-1); vertical-align: 1px; }
+.records-btn.on { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--series-1); }
+
+/* records */
+.rec-note { margin: 0 0 6px; max-width: 900px; }
+.card.rec { padding: 0; overflow: hidden; }
+.rec-tabs { margin-top: 4px; }
+.rec-banner { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.rec-banner.art { position: relative; isolation: isolate; background-size: cover; background-position: center 40%; padding: 34px 16px 12px;
+  color: #f4f3f0; border-bottom: 0; }
+.rec-banner.art::before { content: ""; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(90deg, rgba(8,12,14,.80) 0%, rgba(8,12,14,.40) 55%, rgba(8,12,14,.12) 100%); }
+.rec-banner-title { font-size: 16px; font-weight: 650; }
+.rec-banner-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.rec-banner.art .rec-banner-sub { color: #d6d5cf; }
+.rec-body { padding: 6px 14px 10px; }
+.rec-empty { margin: 6px 0; }
+.card.rec td { vertical-align: top; }
+.card.rec td.rank { color: var(--muted); width: 1.5em; }
+.card.rec td.wide { width: 24%; }
+.card.rec th:nth-child(2), .card.rec th:nth-child(4), .card.rec td.wide, .card.rec td.rec-mission { text-align: left; }
+.rec-sub { color: var(--text-secondary); font-size: 11px; font-weight: 400; margin-top: 2px; }
+.rec-tags { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; color: var(--text-primary); }
+/* the mission's difficulty, at the start of the line under a title */
+.enc-place { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.enc-place .diff { margin-top: 1px; }
+.enc-place .diff, .head-sub .diff { font-variant-numeric: tabular-nums; }
+.head-sub .diff { margin-right: 8px; vertical-align: 1px; }
+/* the times keep to one line; a long map name wraps instead (the card grows, nothing is cut) */
+.enc-sub > span:last-child { flex: none; white-space: nowrap; }

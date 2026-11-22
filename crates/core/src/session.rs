@@ -355,6 +355,8 @@ pub type HitRow = (f64, u32, String, String, f64, f64, u16, u8, u32);
 pub struct Encounter {
     /// the game's enum values, as the build that was running defines them
     c: Arc<Consts>,
+    /// the game version the mission was played on: `{id, build}` (`zar_logs_core::paths::GameVersion`), or null
+    pub game: Value,
     pub match_id: Option<String>,
     pub id: String,
     pub start_wall: f64,
@@ -648,7 +650,7 @@ pub fn raw_attack(key: &str) -> Value {
 impl Encounter {
     fn new(match_id: Option<String>, wall: f64, c: Arc<Consts>) -> Encounter {
         Encounter {
-            c, match_id, id: local_stamp(wall), start_wall: wall, end_wall: None, t0: None, t_last: 0.0, first_hit: None,
+            c, game: Value::Null, match_id, id: local_stamp(wall), start_wall: wall, end_wall: None, t0: None, t_last: 0.0, first_hit: None,
             last_hit: None, players: IndexMap::new(), friendly: HashSet::new(), ent_client: HashMap::new(), local_cid: None,
             mission: json!({}), result: None, party_series: Default::default(),
             targets: Default::default(), hits: Vec::new(), server_hits: 0, predicted_hits: 0, other_hits: 0, enemy_hits: 0, blast_hits: 0, late: 0, dirty: true, closed: false, pending_builds: None,
@@ -980,9 +982,11 @@ impl Encounter {
             let merged = merge_intervals(ivs);
             let total: f64 = merged.iter().map(|iv| iv[1] - iv[0]).sum();
             let meta = fx.meta.get(key).cloned().unwrap_or_default();
-            let (name, kind, asset) = r.effect(key);
+            // "<effect>~<giver>": an effect on a boss, kept apart per giver
+            let base = key.split('~').next().unwrap_or(key);
+            let (name, kind, asset) = r.effect(base);
             out.push(obj(json!({
-                "key": key, "intervals": merged.iter().map(|iv| [rnd(iv[0], 2), rnd(iv[1], 2)]).collect::<Vec<_>>(), "total": total,
+                "key": base, "intervals": merged.iter().map(|iv| [rnd(iv[0], 2), rnd(iv[1], 2)]).collect::<Vec<_>>(), "total": total,
                 "uptime": min_f(1.0, total / dur), "applications": merged.len(), "types": meta.types, "owner": meta.owner,
                 "by": meta.by, "giver": meta.giver, "name": name, "kind": kind, "asset": asset,
             })));
@@ -1098,8 +1102,23 @@ impl Encounter {
             let mut effects = self.buffs(&b.fx, Some((a, z)), r);
             for e in &mut effects {
                 let by = e["by"].as_str().unwrap_or("").to_string();
-                if !by.is_empty() {
-                    e.insert("source".into(), r.attack(&by)["name"].clone());
+                let what = if by.is_empty() { String::new() } else { r.attack(&by)["name"].as_str().unwrap_or("").to_string() };
+                // the player who put it on the boss: the game names their entity (or one of theirs) as the giver
+                let giver = e.get("giver").and_then(Value::as_u64).unwrap_or(0) as u32;
+                let who = if giver == 0 { None } else {
+                    self.players.values().find(|q| q.ents.contains(&giver) || self.ent_client.get(&giver) == Some(&q.cid))
+                };
+                if let Some(q) = who {
+                    e.insert("by_cid".into(), json!(q.cid));
+                    e.insert("by_name".into(), json!(q.name));
+                }
+                let source = match (who, what.is_empty()) {
+                    (Some(q), true) => q.name.clone(),
+                    (Some(q), false) => format!("{} · {what}", q.name),
+                    (None, _) => what,
+                };
+                if !source.is_empty() {
+                    e.insert("source".into(), json!(source));
                 }
             }
             let lanes = group_lanes(&[], effects, max_f(z - a, 1e-6), None);
@@ -1259,7 +1278,7 @@ impl Encounter {
         let mut rows: Vec<(f64, Value)> = self.players.values().filter(|p| p.fig[widest].total.hits != 0 || !p.name.is_empty()).map(|p| {
             let a = &p.fig[counted.index()].total;
             (a.dmg, json!({
-                "cid": p.cid, "name": p.name, "cls": p.cls, "sub": p.sub, "local": p.local, "damage": a.dmg,
+                "cid": p.cid, "name": p.name, "cls": p.cls, "sub": p.sub, "lvl": p.lvl, "local": p.local, "damage": a.dmg,
                 "dps": a.dmg / ct, "share": if party != 0.0 { a.dmg / party } else { 0.0 },
                 "crit": if a.weapon_hits != 0 { a.weapon_crits as f64 / a.weapon_hits as f64 } else { 0.0 }, "hits": a.hits,
                 "taken": p.taken, "downs": p.downs,
@@ -1308,11 +1327,13 @@ impl Encounter {
     /// Row for the encounter list.
     pub fn summary(&self) -> Value {
         let (ct, party, rows) = self.live_rows(Counted::default());
+        // the players' levels go with the row so the mission's level can be worked out from them where the game's
+        // own value is missing (see the app's `logs::mission_level`)
         let players: Vec<Value> = rows.iter().map(|r| json!({ "cid": r["cid"], "name": r["name"], "cls": r["cls"], "sub": r["sub"],
-            "damage": r["damage"], "dps": r["dps"], "local": r["local"] })).collect();
+            "lvl": r["lvl"], "damage": r["damage"], "dps": r["dps"], "local": r["local"] })).collect();
         json!({ "id": self.id, "start": self.start_wall, "mission": self.mission, "duration": self.duration(),
                 "party_damage": party, "party_dps": party / ct, "result": self.result, "closed": self.closed,
-                "game_time": self.game_time, "outcome": self.outcome, "xp": self.xp, "format": FORMAT, "players": players,
+                "game_time": self.game_time, "outcome": self.outcome, "xp": self.xp, "format": FORMAT, "game": self.game, "scaling": self.scaling(), "players": players,
                 "views": self.row_views(ct, &["damage", "dps"]) })
     }
 
@@ -1372,6 +1393,16 @@ impl Encounter {
             "series": series.dense(n), "direct_damage": direct, "weapon_damage": weapon,
         })));
         d
+    }
+
+    /// How strong the game made this mission's enemies, as it wrote it into the mission's load data: the four
+    /// multipliers of the load header (`WorldLoadDataBuilder.BuildData`), in its order. `level` is the base
+    /// difficulty curve at the mission level, `team` the multiplier for the number of players, `enemies` the two
+    /// together (what enemy stats are scaled by), `objectives` the objectives' multiplier for the number of players.
+    /// Null until the mission's data has been read.
+    fn scaling(&self) -> Value {
+        let m = match self.defense.as_ref() { Some(d) if d.mult.len() >= 4 => &d.mult, _ => return Value::Null };
+        json!({ "level": m[0], "enemies": m[1], "team": m[2], "objectives": m[3] })
     }
 
     pub fn detail(&self, r: &Resolver) -> Value {
@@ -1445,7 +1476,7 @@ impl Encounter {
             "world_clock": fresh_world.then_some(self.world_last),
             "first_hit": self.first_hit, "last_hit": self.last_hit, "party_damage": party, "party_dps": party / ct,
             "result": self.result, "bucket": BUCKET, "series": self.party_series[base.index()].dense(n), "players": players,
-            "targets": self.targets_json(&self.targets[0], r), "stats": self.stats(), "format": FORMAT, "events": self.events(r),
+            "targets": self.targets_json(&self.targets[0], r), "stats": self.stats(), "format": FORMAT, "game": self.game, "scaling": self.scaling(), "events": self.events(r),
             "bosses": self.bosses_json(n, r), "closed": self.closed, "damage_types": self.c.damage_types,
             "views": views,
         })
@@ -1521,7 +1552,11 @@ fn effects(c: &Consts, fx: &mut Fx, rows: &[Effect], t: f64, t0: f64, any_owner:
         }
         let owner = if at == c.at_ability && ah != 0 { ah } else { 0 };
         let by = if any_owner && ah != 0 { format!("{at}:{ah:08x}") } else { String::new() };
-        let key = if hash != 0 { format!("{hash:08x}") } else if owner != 0 { format!("t{ty}@{owner:08x}") } else { format!("t{ty}") };
+        let mut key = if hash != 0 { format!("{hash:08x}") } else if owner != 0 { format!("t{ty}@{owner:08x}") } else { format!("t{ty}") };
+        if any_owner && giver != 0 {
+            // on a boss, one row per giver: the same debuff put on it by two players is two rows (see `buffs`)
+            key = format!("{key}~{giver:x}");
+        }
         let meta = fx.meta.entry(key.clone()).or_default();
         meta.types.insert(ty);
         if !by.is_empty() {
@@ -1632,6 +1667,8 @@ fn local_stamp(wall: f64) -> String {
 pub struct Tracker {
     pub resolver: Resolver,
     pub cur: Option<Encounter>,
+    /// the version of the game being read (`Encounter::game`), set by whoever attaches to it
+    pub game: Value,
     match_id: Option<String>,
     last_frame_wall: Option<f64>,
     /// wall time at which the current encounter's world went away
@@ -1644,7 +1681,7 @@ pub struct Tracker {
 
 impl Tracker {
     pub fn new(resolver: Resolver) -> Tracker {
-        Tracker { resolver, cur: None, match_id: None, last_frame_wall: None, leaving: None, last_res: None, closed: Vec::new() }
+        Tracker { resolver, cur: None, game: Value::Null, match_id: None, last_frame_wall: None, leaving: None, last_res: None, closed: Vec::new() }
     }
 
     pub fn feed(&mut self, recs: &[Rec]) {
@@ -1713,6 +1750,7 @@ impl Tracker {
         }
         if self.cur.is_none() && cs == c.cs_running {
             let mut e = Encounter::new(self.match_id.clone(), f.wall, c);
+            e.game = self.game.clone();
             e.on_frame(f);
             e.res0 = self.last_res; // result data left over from the previous mission
             self.cur = Some(e);

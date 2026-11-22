@@ -3,6 +3,7 @@
 //!   /                       the page          /static/*      its scripts and stylesheet (compiled in)
 //!   /icons/*                pictures extracted from the local install (the game version's folder)
 //!   /api/encounters         list of logs      /api/encounter/<id>   one log (GET, DELETE)
+//!   /api/records[?version=<id>|all]   the best missions of this machine's own characters, per game version
 //!   /api/live, /api/stream  capture status and the mission in progress (once, or as server-sent events)
 //!   /overlay                the in-game overlay's page        /api/overlay/toggle   show / hide it (POST)
 //!   /api/open/<name>        open one of the links of `LINKS` in the default browser (POST)
@@ -118,6 +119,12 @@ fn handle(app: &App, req: Request) {
         (Method::Post, "/api/import") => json(&app.import()),
         (Method::Post, _) if action("reveal").is_some() => json(&app.reveal(action("reveal").unwrap_or(""))),
         (Method::Get, "/api/encounters") => json(&app.encounters()),
+        (Method::Get, "/api/records") => {
+            // ?version=<game version id> or "all"
+            let query = req.url().split_once('?').map(|q| q.1).unwrap_or("");
+            let version = query.split('&').find_map(|kv| kv.strip_prefix("version=")).filter(|v| v.chars().all(|c| c.is_ascii_alphanumeric()));
+            json(&app.records(version))
+        }
         (Method::Get, "/api/live") => json(&app.live()),
         (Method::Get, "/api/stream") => return stream(app, req),
         (Method::Get, p) if p.starts_with("/api/encounter/") => match app.detail(&p["/api/encounter/".len()..]) {

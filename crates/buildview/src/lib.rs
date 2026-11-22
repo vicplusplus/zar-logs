@@ -27,6 +27,11 @@ pub const VERSION: u64 = 8;
 /// The definition classes `BuildData` reads names, texts and icon references from.
 pub const CLASSES: &[&str] = &["WeaponDefinitionSO", "ArmourPieceSO", "GearModEnhancementDefinitionSO", "AbilityDefinitionSO",
     "PassiveSkillDefinitionSO", "PlayerClassDefinitionSO"];
+/// Definition classes kept in the tables for the app's own use rather than the build viewer's, to work out how
+/// strong a mission was for a log that does not say (the app's `logs.rs`): `LevelSet` holds
+/// `toughPlayerLevelOffset`, what the Tough modifier adds to a mission's level; `WorldDifficultySettings` the
+/// multiplier per number of players and the base difficulty curve, a `DifficultyCurveDefinitionSO`.
+pub const MISSION_CLASSES: &[&str] = &["LevelSet", "WorldDifficultySettings", "DifficultyCurveDefinitionSO"];
 /// The game enums the labels are taken from.
 pub const ENUMS: &[&str] = &["ItemQuality", "GearType", "GearModType", "DamageType", "WeaponCategory", "DeployableCategory",
     "AbilityDescriptionParameterSource"];
@@ -148,7 +153,7 @@ impl Tables {
     /// The definition classes kept in the stored tables.
     pub fn classes() -> Vec<&'static str> {
         let mut out: Vec<&str> = CLASSES.to_vec();
-        for c in zar_logs_gearcalc::CLASSES.iter().chain(zar_logs_unity::pictures::CLASSES.iter()) {
+        for c in zar_logs_gearcalc::CLASSES.iter().chain(zar_logs_unity::pictures::CLASSES.iter()).chain(MISSION_CLASSES) {
             if !out.contains(c) {
                 out.push(c);
             }
@@ -268,6 +273,7 @@ pub struct BuildData {
     gear_types: Vec<String>,
     mod_types: Vec<String>,
     damage_types: Vec<String>,
+    weapon_categories: Vec<String>,
     deployables: Vec<String>,
     /// enhancement asset name -> per description parameter -> its number by mod quality
     enhancement_numbers: Map<String, Value>,
@@ -323,6 +329,7 @@ impl BuildData {
         Ok(BuildData { gear, skills: t.skills.clone(), row_by_id, loc, classes, defs, icons,
             qualities: members(&t.enums, "ItemQuality"), gear_types: members(&t.enums, "GearType"),
             mod_types: members(&t.enums, "GearModType"), damage_types: members(&t.enums, "DamageType"),
+            weapon_categories: members(&t.enums, "WeaponCategory"),
             deployables: members(&t.enums, "DeployableCategory"), enhancement_numbers: t.enhancement_numbers.clone(),
             from_bonus: t.enums["AbilityDescriptionParameterSource"][FROM_BONUS].as_i64(), bonus_types: members(&t.enums, "BonusType") })
     }
@@ -741,9 +748,52 @@ impl BuildData {
             "abilities": self.abilities(info),
             "skills": self.skills(info),
             "raw": raw,
-            "note": "Loadout the mission was built from, read from the game's own player list at mission start. Weapon \
-                     numbers are weapon + mods before class skills and in-mission buffs; resistances are pieces + mods.",
         })
+    }
+
+    /// A weapon picked up in a mission from a supply crate (a power weapon: the game files its title under
+    /// `PowerWeapon_`), as a card with the numbers of its definition. `None` for any other weapon.
+    pub fn power_weapon(&self, asset: &str) -> Option<Value> {
+        let d = self.def("WeaponDefinitionSO", asset)?;
+        let title = s(d, "title");
+        if !title.starts_with("PowerWeapon_") {
+            return None;
+        }
+        let ty = enum_field(d, "gearType").unwrap_or(0);
+        let ingame = self.icon(d.get("ingameIcon"));
+        let icon = match self.icon(d.get("menuIcon")) { Value::Null => ingame, v => v };
+        let cat = Self::member(&self.weapon_categories, enum_field(d, "category").unwrap_or(-1)).to_string();
+        let info = d.get("damageInfo").cloned().unwrap_or(Value::Null);
+        let dtype = Self::member(&self.damage_types, enum_field(&info, "damageType").unwrap_or(-1)).to_string();
+        let f = |v: &Value, k: &str| v.get(k).and_then(Value::as_f64);
+        let label = |key: &str, ours: &str| self.text_or(key, || ours.to_string());
+        let mut stats = Vec::new();
+        if let Some(dmg) = f(&info, "damage") {
+            let pellets = d.get("projectileMultiPellet").and_then(Value::as_i64).unwrap_or(0) != 0;
+            let n = f(d, "projectilePelletCount").unwrap_or(1.0);
+            let each = if pellets && n > 1.0 { format!(" × {n}") } else { String::new() };
+            stats.push(json!([label("Equipment_Stat_Damage", "Damage"), num(dmg, 1) + &each]));
+        }
+        if let Some(c) = f(&info, "critChance") {
+            stats.push(json!([label("Equipment_Stat_CritChance", "Crit Chance"), format!("{:.1}%", c.clamp(0.0, 1.0) * 100.0)]));
+        }
+        if let Some(m) = f(&info, "critDamageMultiplier") {
+            stats.push(json!([label("BonusStat_WeaponStatModifier_CritDamage", "Crit Damage"), format!("×{}", num(m.max(1.0), 2))]));
+        }
+        if let Some(t) = f(d, "timeBetweenShots") {
+            stats.push(json!([label("BonusStat_WeaponStatModifier_TimeBetweenShots", "Time Between Shots"), num(t, 3) + " s"]));
+        }
+        if let Some(m) = d.get("magazineCapacity").and_then(Value::as_i64) {
+            stats.push(json!([label("Equipment_Stat_ClipSize", "Clip Size"), m.to_string()]));
+        }
+        if let Some(r) = f(d, "reloadTime") {
+            stats.push(json!([label("Equipment_Stat_ReloadTime", "Reload Time"), num(r, 2) + " s"]));
+        }
+        Some(json!({
+            "slot": self.gear_slot(ty), "name": self.text_or(title, || pretty(asset)), "power": true, "qname": "Power weapon",
+            "category": if cat.is_empty() { String::new() } else { self.text_or(&format!("Equipment_WeaponCategory_{cat}"), || cat.clone()) },
+            "dtype": self.damage_type_name(&dtype), "icon": icon, "stats": stats,
+        }))
     }
 }
 

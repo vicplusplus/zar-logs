@@ -3,32 +3,26 @@
 
 const SERIES = [1, 2, 3, 4, 5, 6, 7, 8].map(i => `var(--series-${i})`);
 const OTHER = "var(--other)";
-// hues for the timeline lanes: one per ability (its effects share it), one for buffs, one for debuffs
+// hues for the timeline lanes: one per ability (its effects share it), then one per kind of effect
 const ABILITY_HUES = ["var(--series-7)", "var(--series-5)", "var(--series-6)"];
-function colorLanes(lanes) {
-  let ai = -1;
-  return lanes.map(ln => {
-    let color = "var(--muted)";
-    if (ln.group === "Abilities") { if (!ln.indent) ai++; color = ABILITY_HUES[Math.max(ai, 0) % ABILITY_HUES.length]; }
-    else if (ln.group === "Buffs") color = "var(--series-3)";
-    else if (ln.group === "Debuffs") color = "var(--series-8)";
-    return Object.assign({}, ln, { color });
-  });
-}
+const EFFECT_HUES = { skill: "var(--series-3)", mod: "var(--series-4)", ext: "var(--series-1)", debuff: "var(--series-8)", other: "var(--muted)" };
 
 const ui = {
   list: [], live: null, version: -1,
   sel: null,            // encounter id, or null = follow the latest
   about: false,         // the About page is shown instead of an encounter
+  records: false,       // the Records page is shown instead of an encounter
+  recordsData: null,    // what /api/records gave, null until it has
+  recordsVersion: null, // game version the records are for: an id, "all", or null for the one being played
+  recordsTab: "team_dps", // which record the Records page shows
   detail: null,
   detailText: "",       // raw JSON of `detail`, to skip re-rendering when a refresh brings nothing new
   stale: false,         // a refresh arrived while a chart or card was being read
   player: null,         // selected client id
   tab: "sources",
   mode: "dps",          // dps | cumulative
-  window: 10,           // rolling window (s) for the DPS line
+  window: 3,            // rolling window (s) for the DPS line
   target: null,         // boss entity id the chart is filtered to (null = all targets)
-  allEffects: false,    // also draw the internal / unnamed status effects under the chart
   srcColors: {},        // encounter id -> player cid -> source key -> slot (color follows the source, not its rank)
   lastFetch: 0,
   notice: "",           // what the last import did, shown above the page for a while
@@ -130,12 +124,63 @@ function playerLanes(d, p) {
     return Object.assign({}, ln, { source: ally ? "Ally: " + m[1] : "" });
   });
 }
-// Buffs, debuffs and other effects are the ones on somebody: the selected player, or the boss the chart is narrowed
-// to. The heading of each group of rows says who.
-function onWhom(lanes, who) {
-  return lanes.map(ln => ln.group === "Abilities" ? ln : Object.assign({}, ln, { groupLabel: `${ln.group} on ${who}` }));
+// A player's rows, by where each effect comes from: their abilities (each with the effects it gives), their skills,
+// their mods, everyone and everything else, and the debuffs on them. An effect the meter could not place is last.
+// `quiet` rows (trigger carriers, effects on for an instant) are only listed in the chart's tooltip while active.
+function playerRows(d, p) {
+  if (!p) return [];
+  const lanes = playerLanes(d, p);
+  const whose = p.local ? "your" : `${p.name}'s`, on = p.local ? "you" : p.name;
+  const abilities = new Set(lanes.filter(l => l.kind === "ability").map(l => l.name));
+  const cats = { abil: [], skill: [], mod: [], ext: [], debuff: [], other: [] };
+  const later = new Map();     // ability name -> its effects that were filed with the other effects
+  for (const ln of lanes) {
+    const row = Object.assign({}, ln, { quiet: ln.group === "Other effects" });
+    const src = ln.source || "";
+    let m;
+    if (ln.group === "Abilities") cats.abil.push(row);
+    else if (abilities.has(src)) {
+      if (ln.name.startsWith(src + ": ")) row.name = ln.name.slice(src.length + 2);
+      row.indent = 1;
+      if (!later.has(src)) later.set(src, []);
+      later.get(src).push(row);
+    } else if (ln.group === "Debuffs") cats.debuff.push(row);
+    else if ((m = /^Skill: (.+)$/.exec(src))) cats.skill.push(Object.assign(row, { source: m[1] }));
+    else if ((m = /^Mod: (.+)$/.exec(src))) cats.mod.push(Object.assign(row, { source: m[1] }));
+    else if (/^Ally: /.test(src) || ln.from === "other" || ln.from === "ally" || ln.group === "Buffs") cats.ext.push(row);
+    else cats.other.push(row);
+  }
+  // each ability with its effects under it, in one hue
+  const abil = [];
+  let cur = null, ai = -1;
+  const flush = () => { if (cur && later.has(cur)) abil.push(...later.get(cur)); };
+  for (const ln of cats.abil) {
+    if (ln.kind === "ability") { flush(); cur = ln.name; }
+    abil.push(ln);
+  }
+  flush();
+  for (const ln of abil) { if (ln.kind === "ability") ai++; ln.color = ABILITY_HUES[Math.max(ai, 0) % ABILITY_HUES.length]; }
+  const groups = [["abil", `Buffs from ${whose} abilities`, abil], ["skill", `Buffs from ${whose} skills`, cats.skill],
+    ["mod", `Buffs from ${whose} mods`, cats.mod], ["ext", "External buffs", cats.ext], ["debuff", `Debuffs on ${on}`, cats.debuff],
+    ["other", `Other effects on ${on}`, cats.other]];
+  return groups.flatMap(([g, label, rows]) => rows.map(r => Object.assign(r, { group: g, groupLabel: label, color: r.color || EFFECT_HUES[g] })));
 }
-function whoIs(p) { return p.local ? "you" : p.name; }
+// The effects on a boss, each with the player who put it there, in that player's colour. Logs from 0.3.5 on name
+// the player and keep one row per player; before, the giver entity is matched against the players' own effects.
+function bossRows(d, b) {
+  const byGiver = new Map();
+  for (const q of d.players) for (const ln of q.lanes || []) if (ln.from === "self" && ln.giver) byGiver.set(ln.giver, q);
+  const rows = (b.lanes || []).map(ln => {
+    const q = ln.by_cid != null ? d.players.find(x => x.cid === ln.by_cid) : byGiver.get(ln.giver);
+    let source = ln.source || "";
+    if (q && ln.by_name == null) source = source ? `${q.name} · ${source}` : q.name;
+    const debuff = ln.group === "Debuffs";
+    return Object.assign({}, ln, { source, name: q ? `${ln.name} · ${q.name}` : ln.name, quiet: ln.group === "Other effects",
+      group: debuff ? "b-debuff" : "b-other", groupLabel: (debuff ? "Debuffs on " : "Other effects on ") + b.name,
+      color: q ? playerColor(d, q.cid) : debuff ? EFFECT_HUES.debuff : EFFECT_HUES.other });
+  });
+  return rows.filter(r => r.group === "b-debuff").concat(rows.filter(r => r.group !== "b-debuff"));
+}
 // A crit rate is over the hits of the player's weapons: a turret, an ability or a barrel does not crit, and counting
 // its hits would only water the rate down. A log from before weapon hits were counted apart gives them through the
 // player's weapon sources; a target row of such a log only has all hits.
@@ -173,11 +218,37 @@ function diffTags(m) {
   if (isTough(m)) out.push(h("span", { class: "diff d-tough" }, "Tough"));
   return out;
 }
+// How strong the game made the mission's enemies. Two things, both read in the game's code: the mission level (the
+// players' average level rounded down, plus what Tough adds) picks a point on the game's difficulty curve, and the
+// number of players multiplies that (the game's own table, ×1.7 for two players and so on). So a low-level player
+// lowers the level, and every player adds to the team multiplier. The chip shows the one number the game scales
+// enemy stats by, the two together ("21.7" for level 49 and ×2.5); the tooltip has the parts. It sits on the line
+// under a title (the map's line), not among the title's tags, so a long title never pushes it off.
+function levelTag(m) {
+  if (!m || !(m.level > 0)) return null;
+  const sc = m.scaling || {};
+  const lines = [`Mission level ${m.level}: the players' average level, rounded down${isTough(m) ? ", plus what Tough adds" : ""}`
+    + (m.level_from === "computed" ? " (worked out from the players' levels)" : " (the game's own value)") + "."];
+  if (sc.enemies) lines.unshift(`Difficulty ${num1(sc.enemies)}: what the game scaled this mission's enemies by.`);
+  if (sc.team) {
+    lines.push(`Enemies are scaled by the game's difficulty curve at that level (×${num2(sc.level)}) times ×${num2(sc.team)} for `
+      + `${sc.players === 1 ? "a solo player" : `a team of ${sc.players}`}: ×${num2(sc.enemies)} in all.`
+      + (sc.from === "computed" ? " Worked out from the game's tables; newer logs have the game's own numbers." : " The game's own numbers for this mission."));
+    lines.push("Bosses and some enemies have their own per-player table on top of this.");
+  }
+  // without the game's tables (and an older log) there is only the level to show
+  const text = sc.enemies ? num1(sc.enemies) : `Lvl ${m.level}`;
+  return h("span", { class: "diff d-level", title: lines.join("\n") }, text);
+}
+function num1(x) { return x == null ? "?" : x.toFixed(1); }
+function num2(x) { return x == null ? "?" : (Math.round(x * 100) / 100).toString(); }
 function artStyle(m) { return m && m.art ? `background-image:url("${m.art}")` : ""; }
 function missionPlace(m) { return m && m.type ? m.name || "" : ""; }
 // "0:27 (0:42)": mission time, then the game's own timer, which also counts the intro and outro cutscenes
 function times(r) { return timer(r.duration) + (r.game_time ? ` (${timer(r.game_time)})` : ""); }
 function renderList() {
+  const rb = document.getElementById("records-open");
+  if (rb) rb.classList.toggle("on", ui.records);
   const host = document.getElementById("enc-list");
   const id = currentId();
   if (!ui.list.length) {
@@ -188,21 +259,21 @@ function renderList() {
     const d = new Date(r.start * 1000);
     const m = r.mission || {};
     return h("button", { class: "enc" + (r.id === id ? " sel" : "") + (m.art ? " art" : ""), style: artStyle(m),
-      onclick: () => { ui.sel = r.id; ui.about = false; ui.player = null; ui.target = null; renderList(); refreshDetail(true); renderMain({ top: true }); } },
+      onclick: () => { ui.sel = r.id; ui.about = false; ui.records = false; ui.player = null; ui.target = null; renderList(); refreshDetail(true); renderMain({ top: true }); } },
       h("div", { class: "enc-title" }, !r.closed ? h("span", { class: "pill live" }, "Live") : null,
         r.imported ? h("span", { class: "pill", title: "Imported from a file someone shared" }, "Imported") : null,
-        h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, m.type || missionName(m)), diffTags(m),
-        // the experience the mission gave, where it can be compared down the list without opening each one
-        r.xp ? h("span", { class: "enc-xp", title: "XP gained in this mission" }, `+${fmtFull(r.xp)} XP`) : null),
-      h("div", { class: "enc-sub" }, h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, missionPlace(r.mission)), h("span", null, times(r))),
+        h("span", { style: "overflow:hidden;text-overflow:ellipsis" }, m.type || missionName(m)), diffTags(m)),
+      h("div", { class: "enc-sub" }, h("span", { class: "enc-place" }, levelTag(m), h("span", null, missionPlace(r.mission))), h("span", null, times(r))),
       h("div", { class: "enc-sub dim" },
         h("span", null, d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })),
-        h("span", null, fmt(r.party_damage))));
+        // the experience the mission gave, where it can be compared down the list without opening each one; on a
+        // line of its own size, so a long title with its difficulty tags never pushes it off the card
+        h("span", null, r.xp ? h("span", { class: "enc-xp", title: "XP gained in this mission" }, `+${fmtFull(r.xp)} XP · `) : null, fmt(r.party_damage))));
   }));
 }
 
 // ---------- about ----------
-function openAbout() { ui.about = true; renderMain({ top: true }); }
+function openAbout() { ui.about = true; ui.records = false; renderMain({ top: true }); }
 
 // A link to somewhere outside the app. The app's window never leaves its own pages, so the app is asked to open
 // the address in your default browser (by name: it only opens links from its own short list). In a normal
@@ -231,7 +302,7 @@ function aboutView() {
   const path = text => h("span", { class: "path" }, text);
   const repo = () => outsideLink("repo", app.repository || "the project's repository");
   return [
-    h("div", { class: "head" }, h("div", null, h("h1", null, "About zar-logs"),
+    h("div", { class: "head about-head" }, h("div", null, h("h1", null, "About zar-logs"),
       h("div", { class: "head-sub" }, "Version " + (app.version || "?") + " · unofficial fan tool, free and open source")),
       h("div", { class: "head-actions" }, h("button", { class: "btn", onclick: () => { ui.about = false; renderMain({ top: true }); } }, "Back"))),
     card("Entirely AI-programmed",
@@ -279,6 +350,116 @@ function aboutView() {
   ];
 }
 
+// ---------- records ----------
+async function openRecords() {
+  ui.records = true; ui.about = false;
+  renderList();
+  renderMain({ top: true });
+  await loadRecords();
+}
+async function loadRecords() {
+  const q = ui.recordsVersion ? "?version=" + encodeURIComponent(ui.recordsVersion) : "";
+  try { ui.recordsData = await getJSON("/api/records" + q); } catch (e) { ui.recordsData = { error: String(e) }; }
+  if (ui.records) renderMain();
+}
+// A game version by what Steam calls it: its build number. A log from before logs named their version gets the
+// version that was installed when it was played, which is a best guess.
+function buildName(g) {
+  if (!g || !g.build) return g && g.id ? "game version " + g.id.slice(0, 6) : "unknown game version";
+  return "build " + g.build;
+}
+function versionPicker(r) {
+  const vs = r.versions || [];
+  if (!vs.length) return null;
+  const opts = vs.map(v => h("option", { value: v.id, selected: r.version === v.id ? "" : null },
+    `${buildName(v)}${v.current ? " (current)" : ""}`));
+  opts.push(h("option", { value: "all", selected: r.version === "all" ? "" : null }, "All game versions"));
+  return h("select", { class: "pick", "aria-label": "Game version", title: "Records are kept per game version, so a balance patch starts them afresh",
+    onchange: e => { ui.recordsVersion = e.target.value; loadRecords(); } }, opts);
+}
+function openLog(id) {
+  ui.sel = id; ui.records = false; ui.about = false; ui.player = null; ui.target = null;
+  renderList(); refreshDetail(true); renderMain({ top: true });
+}
+function recordValue(unit, v) {
+  if (unit === "time") return timer(v);
+  if (unit === "xp") return fmtFull(v);
+  if (unit === "xp_min") return fmtFull(v) + " / min";
+  return fmt(v);
+}
+function recordHead(unit) { return { dps: "DPS", xp: "XP", xp_min: "XP per minute", time: "Mission time" }[unit] || ""; }
+// the records, as tabs: [key, tab label, what it is]
+const RECORD_TABS = [
+  ["team_dps", "Team DPS", "The party's damage over the mission time."],
+  ["team_boss", "Team DPS on a boss", "The damage the party dealt to a boss over the time from the first hit to its end, as on the boss card. The fight's length is shown with it."],
+  ["own_dps", "Personal DPS", "Your character's damage over the mission time."],
+  ["own_boss", "Personal DPS on a boss", "Your character's damage to a boss over the time from the first hit to its end. The fight's length is shown with it."],
+  ["xp", "XP", "The XP a mission gave, from the result screen."],
+  ["xp_min", "XP per minute", "The XP a mission gave over its mission time."],
+  ["clear", "Fastest clear", "The mission time of a mission that was won. Per mission only: across missions it says nothing."],
+];
+// One record's table: every character's best, best first. A row opens the log it comes from.
+function recordTable(rec, opts) {
+  const rows = rec.rows || [];
+  if (!rows.length) return h("div", { class: "note rec-empty" }, rec.key === "clear" ? "No mission won yet." : "Nothing recorded yet.");
+  const body = rows.map((r, i) => {
+    const m = r.mission || {};
+    const d = new Date(r.start * 1000);
+    const where = opts.place ? (m.story ? m.name : [m.type, m.name].filter(Boolean).join(" · ")) : m.name;
+    const bits = [rec.unit === "time" ? null : timer(r.duration), r.party === 1 ? "solo" : `${r.party} players`, r.won ? null : "not cleared"];
+    return h("tr", { class: "click", tabindex: 0, title: "Open this mission's log", onclick: () => openLog(r.id),
+        onkeydown: e => { if (e.key === "Enter") openLog(r.id); } },
+      h("td", { class: "rank" }, String(i + 1)),
+      h("td", { class: "wide" }, h("div", { class: "namecell" }, h("span", { class: "name" }, r.name)),
+        h("div", { class: "rec-sub" }, [r.cls, r.sub].filter(Boolean).join(" · "))),
+      h("td", null, h("b", { title: rec.unit === "dps" ? fmtFull(r.value) + " damage per second" : null }, recordValue(rec.unit, r.value)),
+        r.fight != null ? h("div", { class: "rec-sub", title: `${r.boss || "Boss"}: from the first hit to its end` }, `${timer(r.fight)} fight`) : null),
+      h("td", { class: "left rec-mission" }, h("div", { class: "rec-tags" }, where ? h("span", null, where) : null, diffTags(m), levelTag(m)),
+        h("div", { class: "rec-sub" }, [r.boss, ...bits].filter(Boolean).join(" · "))),
+      h("td", { class: "rec-sub" }, d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }),
+        opts.all && r.build ? h("div", null, "build " + r.build) : null));
+  });
+  return simpleTable(["#", "Character", recordHead(rec.unit), "Mission", "Date"], body);
+}
+// a section of the page: a banner with the mission's picture, then the chosen record's table
+function recordSection(title, sub, art, rec, opts) {
+  return h("div", { class: "card rec" },
+    h("div", { class: "rec-banner" + (art ? " art" : ""), style: art ? `background-image:url("${art}")` : null },
+      h("div", { class: "rec-banner-title" }, title), sub ? h("div", { class: "rec-banner-sub" }, sub) : null),
+    h("div", { class: "rec-body" }, rec ? recordTable(rec, opts) : h("div", { class: "note rec-empty" }, "Nothing recorded yet.")));
+}
+function recordsView() {
+  const r = ui.recordsData;
+  const back = h("div", { class: "head-actions" }, r && !r.error ? versionPicker(r) : null,
+    h("button", { class: "btn", onclick: () => { ui.records = false; renderList(); renderMain({ top: true }); } }, "Back"));
+  const head = sub => h("div", { class: "head about-head" }, h("div", null, h("h1", null, "Records"), h("div", { class: "head-sub" }, sub)), back);
+  if (!r) return [head("Reading the logs…")];
+  if (r.error) return [head("The records could not be read: " + r.error)];
+  const chars = r.characters || [];
+  const ver = (r.versions || []).find(v => v.id === r.version);
+  const onWhat = r.version === "all" ? "on every game version" : ver ? `on ${buildName(ver)}` : "";
+  const tab = RECORD_TABS.find(t => t[0] === ui.recordsTab) || RECORD_TABS[0];
+  const opts = { all: r.version === "all" };
+  const pick = list => (list || []).find(x => x.key === tab[0]);
+  const out = [head(`${r.missions_counted} ${r.missions_counted === 1 ? "mission" : "missions"} of your own `
+      + `${chars.length === 1 ? "character" : "characters"}${chars.length ? " (" + chars.join(", ") + ")" : ""} ${onWhat}`
+      + (ver && ver.inferred ? " (worked out from the dates: these logs are from before logs named their game version)" : "")),
+    h("div", { class: "tabs rec-tabs", role: "tablist" }, RECORD_TABS.map(([k, label]) =>
+      h("button", { class: k === tab[0] ? "on" : "", role: "tab", "aria-selected": k === tab[0],
+        onclick: () => { ui.recordsTab = k; renderMain(); } }, label))),
+    h("div", { class: "note rec-note" }, tab[2] + " One row per character, its best; only the player marked as you in each log counts. "
+      + "Records are kept per game version, so a balance patch starts them afresh. Click a row to open that mission.")];
+  const global = pick(r.global);
+  if (global) out.push(recordSection("All missions", `${r.missions_counted} ${r.missions_counted === 1 ? "mission" : "missions"}`, null, global,
+    Object.assign({ place: true }, opts)));
+  for (const g of r.missions || []) {
+    out.push(recordSection(g.title || "Mission", (g.story ? "Story mission · " : "Operation · ") + `${g.count} ${g.count === 1 ? "mission" : "missions"}`,
+      g.art, pick(g.records), Object.assign({ place: false }, opts)));
+  }
+  if (r.skipped) out.push(h("div", { class: "note" }, `${r.skipped} log file(s) could not be read and are left out.`));
+  return out;
+}
+
 // ---------- main ----------
 function tile(label, value, note) {
   return h("div", { class: "tile" }, h("div", { class: "tile-label" }, label), h("div", { class: "tile-value" }, value),
@@ -324,6 +505,10 @@ function renderMainInner(main) {
     main.replaceChildren(...aboutView());
     return;
   }
+  if (ui.records) {
+    main.replaceChildren(...recordsView());
+    return;
+  }
   if (!d) {
     main.replaceChildren(ui.notice ? h("div", { class: "notice", role: "status" }, ui.notice) : "", h("div", { class: "head" }, h("div", null, h("h1", null, "zar-logs"),
       h("div", { class: "head-sub" }, "Waiting for a mission. Encounters are recorded automatically while the meter is running."))),
@@ -337,10 +522,11 @@ function renderMainInner(main) {
   }
   const when = new Date(d.start * 1000);
   const m = d.mission || {};
-  const subBits = [missionPlace(m), when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })].filter(Boolean);
+  const subBits = [missionPlace(m), when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+    d.game ? buildName(d.game) + (d.game.inferred ? " (the one installed then)" : "") : null].filter(Boolean);
   const head = h("div", { class: "head" + (m.art ? " art" : ""), style: artStyle(m) },
     h("div", null, h("h1", null, (m.type || missionName(m)) + (d.duration ? ` | ${times(d)}` : ""), diffTags(m)),
-      h("div", { class: "head-sub" }, subBits.join(" · "))),
+      h("div", { class: "head-sub" }, levelTag(m), subBits.join(" · "))),
     h("div", { class: "head-actions" },
       !d.closed ? h("span", { class: "pill live" }, "Live") : null,
       d.imported ? h("span", { class: "pill", title: "Imported from a file someone shared" }, "Imported") : null,
@@ -350,17 +536,17 @@ function renderMainInner(main) {
   // what the figures count besides the players' own damage to enemies: structures (crates, pods, barrels, level
   // geometry) and the blasts of enemies that explode. A log from before these were kept apart has them in.
   const extras = [d.structures === "on" ? "structures" : "", d.blasts === "on" ? "enemy explosions" : ""].filter(Boolean);
-  const counted = d.structures === "always" ? "structures and enemy explosions included" : extras.length ? "with " + extras.join(" and ") : "your damage to enemies";
+  const counted = d.structures === "always" ? "structures and enemy explosions included" : extras.length ? "with " + extras.join(" and ") : "";
   const tiles = h("div", { class: "tiles" },
-    tile("Party damage", fmt(d.party_damage), `${fmtFull(d.party_damage)} · ${counted}`),
-    tile("Party DPS", fmt(d.party_dps), "damage ÷ mission time"),
+    tile("Party damage", fmt(d.party_damage), [fmtFull(d.party_damage), counted].filter(Boolean).join(" · ")),
+    tile("Party DPS", fmt(d.party_dps), "damage / mission time"),
     tile("Mission time", timer(d.duration), [
       !d.closed && !d.game_time && d.result == null ? "running" :
         d.outcome === "won" ? "mission complete" : d.outcome === "lost" ? "mission failed" :
         d.result === "finished" ? "mission ended" : "left before the end",
       d.game_time ? `game timer ${timer(d.game_time)} with cutscenes` : null].filter(Boolean).join(" · ")),
-    tile("Kills", fmtFull(d.players.reduce((a, p) => a + (p.kills_native || p.kills), 0)), "enemies killed by players"),
-    d.xp ? tile("XP gained", fmtFull(d.xp), (d.players.find(p => p.local) || {}).name ? "by " + d.players.find(p => p.local).name + ", from the result screen" : "from the result screen") : null);
+    tile("Kills", fmtFull(d.players.reduce((a, p) => a + (p.kills_native || p.kills), 0))),
+    d.xp ? tile("XP gained", fmtFull(d.xp), "from the result screen") : null);
 
   if (ui.target != null && !(d.bosses || []).some(b => b.id === ui.target)) ui.target = null;
   main.replaceChildren(ui.notice ? h("div", { class: "notice", role: "status" }, ui.notice) : "", head, tiles, partyCard(d), timeCard(d), playerCard(d), captureNote(d),
@@ -409,8 +595,6 @@ function partyCard(d) {
 function timeCard(d) {
   const p = d.players.find(x => x.cid === ui.player);
   const boss = (d.bosses || []).find(b => b.id === ui.target);
-  const lanes = boss ? boss.lanes : playerLanes(d, p);
-  const hidden = lanes.filter(l => l.group === "Other effects").length;
   const what = boss ? `Damage to ${boss.name}` : "Damage";
   const pick = (d.bosses || []).length ? h("select", { class: "pick", "aria-label": "Target shown in the chart",
     onchange: e => { ui.target = e.target.value === "" ? null : Number(e.target.value); renderMain(); } },
@@ -418,13 +602,9 @@ function timeCard(d) {
     d.bosses.map(b => h("option", Object.assign({ value: String(b.id) }, b.id === ui.target ? { selected: "selected" } : {}), b.name))) : null;
   return h("section", { class: "card" },
     h("div", { class: "card-head" },
-      h("div", null, h("div", { class: "card-title" }, ui.mode === "dps" ? `${what} per second over time` : `Cumulative ${what.toLowerCase()} over time`),
-        h("div", { class: "card-sub" }, (ui.mode === "dps" ? `Rolling ${ui.window}s average per player` : "Running total per player")
-          + (boss ? ` · from when ${boss.name} appeared to when it ${boss.killed ? "died" : "was last seen"}, its health and the effects on it below`
-            : p && lanes.length ? ` · abilities and effects on ${p.name} below, on the same time axis` : ""))),
+      h("div", null, h("div", { class: "card-title" }, ui.mode === "dps" ? `${what} per second over time` : `Cumulative ${what.toLowerCase()} over time`)),
       h("div", { class: "controls" }, pick,
-        hidden ? seg([[false, "Named effects"], [true, `All effects (+${hidden})`]], ui.allEffects, v => { ui.allEffects = v; renderMain(); }) : null,
-        ui.mode === "dps" ? seg([[5, "5s"], [10, "10s"], [30, "30s"]], ui.window, v => { ui.window = v; renderMain(); }) : null,
+        ui.mode === "dps" ? seg([[1, "1s"], [3, "3s"], [5, "5s"]], ui.window, v => { ui.window = v; renderMain(); }) : null,
         seg([["dps", "DPS"], ["cumulative", "Cumulative"]], ui.mode, v => { ui.mode = v; renderMain(); }))),
     boss ? bossStrip(d, boss) : null,
     d.players.length > 1 ? legend(d.players.map(pl => ({ name: pl.name, color: playerColor(d, pl.cid) })), true) : null,
@@ -434,22 +614,23 @@ function timeCard(d) {
 // what is known about the selected boss: a snapshot row above its chart
 function bossStrip(d, b) {
   const alive = Math.max(0, b.end - b.start);
+  const fight = b.first_hit != null ? Math.max(0, b.end - b.first_hit) : alive;
   const bits = [
     ["Max health", b.hp_max ? fmt(b.hp_max) : "–"],
     ["Damage dealt to it", fmt(b.damage)],
     ["Appeared at", timer(b.start)],
     [b.killed ? "Killed at" : "Last seen at", timer(b.end)],
-    [b.killed ? "Time to kill" : "Time alive", timer(b.first_hit != null && b.killed ? Math.max(0, b.end - b.first_hit) : alive)],
-    ["DPS on it", fmt(b.damage / Math.max(b.first_hit != null ? b.end - b.first_hit : alive, 1))],
+    [b.killed ? "Time to kill" : "Time alive", timer(b.killed ? fight : alive)],
+    // over the time it was being hit: a boss that dies in under a second is not averaged over a whole one
+    ["DPS on it", fight > 0.01 ? fmt(b.damage / fight) : "–"],
   ];
   if (b.mods && b.mods.length) bits.push(["Modifiers", b.mods.map(x => x.replace("{0}", "").trim()).join(", ")]);
-  if (b.stage != null) bits.push(["Stage", String(b.stage + 1)]);
   const df = b.defense || {};
   return h("div", { class: "boss" },
     b.icon ? h("div", { class: "boss-pic" }, icon(b.icon, "", null)) : null,
     h("div", { class: "boss-body" },
       h("div", { class: "strip" }, bits.map(([k, v]) => h("div", null, h("span", null, k), h("b", null, v)))),
-      h("div", { class: "strip def" }, defenseBits(b, df, "the party's"))));
+      h("div", { class: "strip def" }, defenseBits(b, df, "the party's", { brief: !!b.hp_max }))));
 }
 
 // ---- what a target can take: health, resistances per damage type, status immunities, and how much they removed ----
@@ -469,13 +650,15 @@ function mitigationText(x, whose) {
   return v > 0 ? `${est}${pct(v)} of ${whose} damage resisted` : `${est}${pct(-v)} extra from weaknesses`;
 }
 // the cells of a defence row: [label, node] pairs wrapped the way .strip expects
-function defenseBits(x, df, whose) {
+// brief: for the boss strip, which has the maximum health beside it and the resistances to read the rest from
+function defenseBits(x, df, whose, opts) {
+  const brief = !!(opts && opts.brief);
   const cell = (k, v) => h("div", null, h("span", null, k), typeof v === "string" ? h("b", null, v) : v);
   const out = [];
   if (!df.source) {
     out.push(cell("Defences", "not recorded for this target"));
   } else {
-    if (df.hp) out.push(cell(df.source === "base" ? "Base health" : "Health", span(df.hp[0], df.hp[1], fmtFull)));
+    if (df.hp && !brief) out.push(cell(df.source === "base" ? "Base health" : "Health", span(df.hp[0], df.hp[1], fmtFull)));
     if (df.shield && df.shield[1] > 0) out.push(cell("Shield", span(df.shield[0], df.shield[1], fmtFull)));
     out.push(cell("Resistances", df.resist && df.resist.length ? resChips(df.resist) : "none"));
     if (df.shield_resist && df.shield_resist.length) out.push(cell("Shield resistances", resChips(df.shield_resist)));
@@ -489,7 +672,7 @@ function defenseBits(x, df, whose) {
   }
   for (const [name, pool, lo, hi] of df.observed || [])
     out.push(cell(`${name} applied on hits${pool === "shield" ? " (shield)" : ""}`, resText(lo, hi)));
-  const mit = mitigationText(x, whose);
+  const mit = brief ? null : mitigationText(x, whose);
   if (mit) out.push(cell("Mitigation", mit));
   return out;
 }
@@ -566,9 +749,14 @@ function sourcesTab(d, p) {
   if (restSum > 0) parts.push({ name: `Other (${rest.length})`, value: restSum, color: OTHER });
   const top = p.sources[0].damage || 1;
   const ct = Math.max(d.duration, 1);
+  // a power weapon (picked up from a supply crate) is named in its red, with its card on hover
+  const srcName = x => {
+    const cell = h("div", { class: "namecell" + (x.power ? " hov power" : "") }, h("i", { class: "swatch", style: `background:${sourceColor(map, x.key)}` }),
+      h("span", { class: "name" }, x.name), h("span", { class: "sub" }, x.power ? "Power weapon" : kindLabel(x.kind)));
+    return x.power ? hoverCard(cell, () => powerCard(x.power)) : cell;
+  };
   const rows = p.sources.map(x => h("tr", null,
-    h("td", { class: "wide" }, h("div", { class: "namecell" }, h("i", { class: "swatch", style: `background:${sourceColor(map, x.key)}` }),
-      h("span", { class: "name" }, x.name), h("span", { class: "sub" }, kindLabel(x.kind))),
+    h("td", { class: "wide" }, srcName(x),
       h("div", { class: "meter" }, h("i", { style: `width:${(x.damage / top * 100).toFixed(1)}%;background:${sourceColor(map, x.key)}` }))),
     h("td", null, fmt(x.damage)), h("td", null, pct(p.damage ? x.damage / p.damage : 0)), h("td", null, fmt(x.damage / ct)),
     h("td", null, fmtFull(x.hits)), h("td", null, fmt(x.hits ? x.damage / x.hits : 0)), h("td", null, fmt(x.min)), h("td", null, fmt(x.max)),
@@ -650,7 +838,7 @@ function takenTab(d, p) {
 }
 // ---------- abilities and effects table (the timeline itself sits under the damage chart) ----------
 function effectsTab(d, p) {
-  const lanes = onWhom(colorLanes(playerLanes(d, p)), whoIs(p));
+  const lanes = playerRows(d, p);
   if (!lanes.length) return h("div", { class: "empty" }, "No abilities or status effects recorded for this player.");
   const rows = [];
   let group = null;
@@ -667,11 +855,7 @@ function effectsTab(d, p) {
       h("td", null, untimed ? "–" : pct(ln.uptime)), h("td", null, untimed ? "–" : timer(ln.total || 0)),
       h("td", null, String(ln.applications))));
   }
-  return h("div", null,
-    h("div", { class: "card-sub", style: "margin-bottom:8px" }, `What ${p.local ? "you" : p.name} used, and the buffs and debuffs that were on ${p.local ? "you" : p.name}. `
-      + "The same rows are drawn on the time axis under the damage chart above."
-      + ((d.bosses || []).length ? " For the effects on a boss (what you put on it), choose the boss in the list above that chart." : "")),
-    simpleTable(["Ability / effect", "Source", "Uptime", "Active time", "Uses"], rows));
+  return simpleTable(["Ability / effect", "Source", "Uptime", "Active time", "Uses"], rows);
 }
 
 // ---------- build, laid out like the game's loadout screens ----------
@@ -753,6 +937,14 @@ function gearTile(g, opts) {
     o.extra ? h("div", { class: "mod-line" }, o.extra) : null,
     g.stats && g.stats.length ? statList(g.stats) : null));
 }
+// a weapon from a supply crate: not part of anyone's loadout, so its card has the weapon's own base numbers
+function powerCard(w) {
+  return h("div", { class: "tcard" },
+    h("div", { class: "tcard-bar", style: "background:var(--power)" }, w.qname || "Power weapon"),
+    h("div", { class: "tcard-title" }, h("span", null, w.name), dtypeChip(w.dtype)),
+    h("div", { class: "mod-line" }, [w.category, "from a supply crate", "base numbers"].filter(Boolean).join(" · ")),
+    w.stats && w.stats.length ? statList(w.stats) : null);
+}
 function overviewRow(label, value) { return h("div", { class: "ov-row" }, h("span", null, label), h("b", null, value)); }
 function buildSection(title, left, right) {
   return h("div", { class: "bsec" }, h("div", null, h("div", { class: "bsec-title" }, title), left),
@@ -828,7 +1020,6 @@ function buildTab(d, p) {
           sk.ranks.length ? h("div", { class: "tcard-sec" }, sk.ranks.map((r, i) => stateLine(r, i < sk.rank))) : null,
           sk.bonus ? stateLine(`Max rank: ${sk.bonus}`, sk.rank >= sk.max) : null)))))));
   }
-  if (b.note) out.push(h("div", { class: "note" }, b.note));
   return h("div", { class: "buildv" }, out);
 }
 
@@ -862,13 +1053,13 @@ function drawCharts(d) {
     const raw = pl => boss ? boss.series[String(pl.cid)] || [] : pl.series;
     const k = Math.ceil(Math.max(...d.players.map(pl => raw(pl).length), 1) / 600);
     const series = d.players.map(pl => {
-      const base = ui.mode === "dps" ? rolling(raw(pl), ui.window) : cumulative(raw(pl));
+      const base = ui.mode === "dps" ? rolling(raw(pl), Math.max(1, Math.round(ui.window / (d.bucket || 1)))) : cumulative(raw(pl));
       const [vals] = downsample(base, 600, ui.mode === "dps" ? "avg" : "last");
       return { name: pl.name, color: playerColor(d, pl.cid), values: vals };
     });
-    const own = colorLanes(playerLanes(d, sel));
-    const lanes = (boss ? onWhom(colorLanes(boss.lanes), boss.name) : onWhom(own, sel ? whoIs(sel) : "the player"))
-      .filter(l => ui.allEffects || l.group !== "Other effects");
+    // the selected player's abilities and effects, and with a boss chosen, the effects on it under them
+    const own = playerRows(d, sel);
+    const lanes = boss ? own.concat(bossRows(d, boss)) : own;
     // moments worth a line: every ability activation of the selected player, and bosses appearing / dying
     const markers = [];
     for (const ln of own) {
@@ -945,7 +1136,7 @@ async function importEncounters() {
     if (r.present) bits.push(`${r.present} ${r.present === 1 ? "was" : "were"} already here.`);
     for (const x of r.rejected || []) bits.push(`${x.file}: ${x.why}.`);
     await refreshList();
-    if (n) { ui.sel = r.added[0]; ui.about = false; ui.player = null; ui.target = null; renderList(); await refreshDetail(true); }
+    if (n) { ui.sel = r.added[0]; ui.about = false; ui.records = false; ui.player = null; ui.target = null; renderList(); await refreshDetail(true); }
     notify(bits.join(" "));
   } catch (e) { notify("Could not import: " + e.message); }
 }
@@ -970,4 +1161,5 @@ addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setT
 })();
 
 document.getElementById("about-open").addEventListener("click", openAbout);
+document.getElementById("records-open").addEventListener("click", openRecords);
 document.getElementById("import-open").addEventListener("click", importEncounters);
