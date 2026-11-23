@@ -1,3 +1,5 @@
 # Windows scripts must keep CRLF line endings
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+# Linux package scripts must keep LF line endings (they run under /bin/sh)
+*.sh text eol=lf

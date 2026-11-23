@@ -32,6 +32,20 @@
       "nsis": {
         "installMode": "currentUser"
       }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libcap2-bin"
+        ],
+        "postInstallScript": "linux/postinst.sh"
+      },
+      "rpm": {
+        "depends": [
+          "libcap"
+        ],
+        "postInstallScript": "linux/postinst.sh"
+      }
     }
   }
 }

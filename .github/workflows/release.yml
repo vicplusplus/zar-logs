@@ -1,7 +1,7 @@
 name: release
 
-# Pushing a tag like v0.1.0 builds the app on a clean machine and attaches the installer and the portable zip to a
-# draft GitHub release.
+# Pushing a tag like v0.1.0 builds the app on clean machines and attaches the Windows installer and portable zip,
+# and the Linux .deb, .rpm and portable tarball, to a draft GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -32,4 +32,31 @@ jobs:
           files: |
             zar-logs-setup.exe
             zar-logs-portable.zip
+          draft: true
+
+  linux:
+    runs-on: ubuntu-22.04 # the oldest supported runner: the build then runs on any newer glibc too
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      - run: cargo install tauri-cli --version "^2" --locked
+      # the .deb and .rpm give the program the right to read the game when installed (src-tauri/linux/postinst.sh).
+      # No AppImage: it runs from a mounted image, and that right can only be given to an ordinary file.
+      - run: cargo tauri build --bundles deb,rpm
+      - name: Package
+        run: |
+          cp target/release/bundle/deb/*.deb zar-logs-linux-amd64.deb
+          cp target/release/bundle/rpm/*.rpm zar-logs-linux-x86_64.rpm
+          mkdir zar-logs
+          cp target/release/zar-logs README.md LICENSE THIRD-PARTY-NOTICES.md zar-logs/
+          tar -czf zar-logs-linux-portable.tar.gz zar-logs
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            zar-logs-linux-amd64.deb
+            zar-logs-linux-x86_64.rpm
+            zar-logs-linux-portable.tar.gz
           draft: true

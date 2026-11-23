@@ -1649,6 +1649,25 @@ fn local_stamp(wall: f64) -> String {
             }
         }
     }
+    #[cfg(unix)]
+    {
+        /// C's `struct tm` (glibc and musl agree on it for 64-bit Linux and macOS).
+        #[repr(C)]
+        struct Tm { sec: i32, min: i32, hour: i32, mday: i32, mon: i32, year: i32, wday: i32, yday: i32, isdst: i32, gmtoff: i64, zone: *const u8 }
+        extern "C" {
+            fn tzset();
+            fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+        }
+        let t = wall.floor() as i64;
+        // SAFETY: `tm` is plain data that localtime_r fills; both pointers outlive the call.
+        unsafe {
+            let mut tm: Tm = std::mem::zeroed();
+            tzset();
+            if !localtime_r(&t, &mut tm).is_null() {
+                return format!("{:04}{:02}{:02}-{:02}{:02}{:02}", tm.year + 1900, tm.mon + 1, tm.mday, tm.hour, tm.min, tm.sec);
+            }
+        }
+    }
     // fallback: UTC, by the civil-from-days algorithm
     let secs = wall.floor() as i64;
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));

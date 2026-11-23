@@ -53,8 +53,9 @@ fn open_in_browser(url: &str) -> bool {
     let result = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
     result as usize > 32 // ShellExecute's own convention: values up to 32 are errors
 }
+/// The same with the desktop's own opener (`xdg-open` on Linux, `open` on macOS).
 #[cfg(not(windows))]
-fn open_in_browser(_url: &str) -> bool { false }
+fn open_in_browser(url: &str) -> bool { crate::dialogs::run_detached(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, &[url]) }
 
 /// The header the app's own pages send with every request that changes or does something.
 const OWN_PAGE: &str = "X-Zar-Logs";

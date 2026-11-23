@@ -41,6 +41,14 @@ A release has two files: `zar-logs-setup.exe` (the installer) and `zar-logs-port
 `uninstall.cmd`, `uninstall.ps1`, `README.md`, `LICENSE` and `THIRD-PARTY-NOTICES.md`).
 `.github/workflows/release.yml` builds both when a `v*` tag is pushed and leaves a draft release.
 
+**Linux** (the game under Proton; experimental) builds the same way once the WebKitGTK headers are installed
+(Debian / Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev`). `cargo tauri build --bundles
+deb,rpm` makes the packages, whose post-install script (`src-tauri/linux/postinst.sh`) gives the program
+`CAP_SYS_PTRACE`; the release also ships the bare program as `zar-logs-linux-portable.tar.gz`. The only
+Linux-specific parts are `crates/core/src/proc/linux.rs` (finding and reading the game), the folders in
+`crates/core/src/paths.rs`, and the file chooser / file manager calls in `src-tauri/src/dialogs.rs`.
+`zar-logs-cli probe` is the quickest check that attaching works on a given machine.
+
 `--headless` runs the whole app without windows (the pages are then reachable in a browser at the address it
 prints).
 

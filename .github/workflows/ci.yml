@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   build:
-    # the reader uses Win32 process APIs: Windows only
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -18,4 +17,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # the tests that need an installed copy of the game are marked `ignore` and do not run here
       - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked
+
+  linux:
+    # the game runs under Proton there; the reader uses /proc and process_vm_readv (crates/core/src/proc/linux.rs)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --locked
+      # includes reading a child process's memory, as the app reads the game
       - run: cargo test --workspace --locked

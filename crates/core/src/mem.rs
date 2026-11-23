@@ -1,13 +1,13 @@
 //! The memory source of the decoder: the running game, read from outside.
 //!
-//! The decoder only ever calls `read(addr, size)`, which is `ReadProcessMemory` on a handle that can do nothing
-//! else (see proc.rs).
+//! The decoder only ever calls `read(addr, size)`: `ReadProcessMemory` on a handle that can do nothing else on
+//! Windows, `process_vm_readv` on Linux (see proc/).
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use crate::proc::Process;
 
 pub fn le_u16(b: &[u8], o: usize) -> u16 { u16::from_le_bytes(b[o..o + 2].try_into().unwrap()) }
@@ -69,18 +69,18 @@ pub fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub struct Live {
     p: Arc<Process>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 impl Live {
     pub fn new(p: Arc<Process>) -> Live { Live { p } }
     pub fn process(&self) -> &Arc<Process> { &self.p }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 impl Mem for Live {
     fn begin_frame(&mut self) -> f64 { now() }
     fn end_frame(&mut self, _keep: bool) {}

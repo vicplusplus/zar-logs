@@ -1,6 +1,7 @@
 # zar-logs
 
-A damage meter and build viewer for Zombie Assault: Resurgence, as a small desktop app for Windows (Rust + Tauri).
+A damage meter and build viewer for Zombie Assault: Resurgence, as a small desktop app for Windows, and for Linux
+(experimental, for the game under Proton) (Rust + Tauri).
 It records every mission you play: damage by player, by source and over time, healing, status effect uptime, what
 each enemy resisted, and each player's build as the game's own cards show it.
 
@@ -101,7 +102,7 @@ What it does:
 
 - Runs as its own, separate program.
 - Reads the running game's memory from outside. It asks Windows for read access only, so it is not able to write
-  to the game even by mistake.
+  to the game even by mistake. On Linux it uses the read-only call `process_vm_readv` and nothing else.
 - Reads files of your installed game (never changes them) to learn names, numbers and pictures.
 - Writes only its own files: your logs and a cache, in its own folder.
 
@@ -116,7 +117,7 @@ What it never does:
 - No account details. It never asks for a login and does not store account ids.
 
 You do not have to take this on trust: all of the code is in this repository, the part that touches the game is
-one short file (`crates/core/src/proc.rs`), and [METHODS.md](METHODS.md) lists every technique and tool that was
+one short file per system (`crates/core/src/proc/windows.rs`, `crates/core/src/proc/linux.rs`), and [METHODS.md](METHODS.md) lists every technique and tool that was
 used to make it, and the ones that were not.
 
 Things you should know before deciding:
@@ -161,6 +162,39 @@ list of apps.
 
 Prefer to build it yourself? See [CONTRIBUTING.md](CONTRIBUTING.md); it is one command.
 
+### Linux (experimental)
+
+The game has no Linux version, but it runs on Linux through Steam's Proton, and zar-logs can read it there: under
+Proton the game is the same Windows program, with the same memory. **This is new and has not yet been tried
+with the real game on a real Linux machine.** If you try it, please say how it went in an issue, working or not.
+
+Linux does not let one program read another program's memory unless it started it, or has been given the right
+to (`CAP_SYS_PTRACE`). The packages give zar-logs that right when they install it; the portable version needs it
+given by hand.
+
+1. Install it, one of:
+   - **Debian, Ubuntu, Mint, Pop!_OS…:** `zar-logs-linux-amd64.deb` (`sudo apt install ./zar-logs-linux-amd64.deb`).
+   - **Fedora, openSUSE…:** `zar-logs-linux-x86_64.rpm` (`sudo dnf install ./zar-logs-linux-x86_64.rpm`).
+   - **Anything else, or no installing:** `zar-logs-linux-portable.tar.gz`. Unpack it anywhere, then give the
+     program the right once (and again after each update, since a new file does not have it):
+     `sudo setcap cap_sys_ptrace=ep ./zar-logs/zar-logs`
+
+   It needs WebKitGTK 4.1, which most desktops already have; the packages pull it in.
+2. Start zar-logs and the game, in any order.
+
+If the right is missing, the viewer's status line says so and what to run. zar-logs uses it only to read the
+game (`crates/core/src/proc/linux.rs`), but the right itself would let it read any program on the machine, so it
+is worth knowing it is there. Uninstalling the package removes it with the program; on the portable version,
+`sudo setcap -r ./zar-logs/zar-logs` removes it. On systems where
+`cat /proc/sys/kernel/yama/ptrace_scope` prints `0`, it is not needed at all.
+
+Logs, settings and the cache are in `~/.local/share/com.vicplusplus.zar-logs`. "Import…" uses the desktop's file
+chooser through `zenity` (installed with Steam) or `kdialog`. The overlay works best with the game in borderless or
+windowed mode; on a Wayland desktop it may not stay above the game.
+
+The Steam Deck should work the same way in desktop mode (set a password with `passwd` first, for `sudo`).
+macOS is not supported.
+
 ## Settings
 
 There is nothing you have to set. The overlay's on / off switch is in the viewer's sidebar, and its position is
@@ -170,7 +204,7 @@ time, for missions already recorded too, because every log holds the figures for
 by version 0.1 have only the figures with both in them, and those recorded by 0.2.0 have no enemy explosions.
 
 For the rest there is a small file, `config.json`, in the data folder
-(`%LOCALAPPDATA%\com.vicplusplus.zar-logs`). Close zar-logs
+(`%LOCALAPPDATA%\com.vicplusplus.zar-logs`; on Linux `~/.local/share/com.vicplusplus.zar-logs`). Close zar-logs
 before editing it.
 
 | Setting | Key in `config.json` | Default |

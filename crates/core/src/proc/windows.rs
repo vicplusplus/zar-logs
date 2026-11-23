@@ -1,4 +1,4 @@
-//! Read-only access to another process's memory (Windows).
+//! Read-only access to another process's memory: Windows.
 //!
 //! The handle is opened with `PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION` and nothing else: no VM_WRITE,
 //! no VM_OPERATION, no CREATE_THREAD, no debug rights. The only memory API used is `ReadProcessMemory`. Nothing is
@@ -82,6 +82,9 @@ pub fn modules(pid: u32) -> HashMap<String, (u64, u32)> {
     }
     out
 }
+
+/// Load address of the module called `name` (lower case) in the process. None while the game is still loading.
+pub fn module_base(p: &Process, name: &str) -> Option<u64> { modules(p.pid).get(name).map(|m| m.0) }
 
 /// A process opened for reading only.
 pub struct Process {

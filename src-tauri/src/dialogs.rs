@@ -1,7 +1,8 @@
 //! "Show in folder" (how a log is shared: its file is shown in Explorer, to drag wherever it should go) and the
 //! file dialog for importing logs.
 //!
-//! Both are Windows' own: the user picks, the page never names a path. The dialog blocks the thread that asks
+//! Both are the system's own (Windows' dialog and Explorer; on Linux the desktop's file chooser and file manager):
+//! the user picks, the page never names a path. The dialog blocks the thread that asks
 //! until the user has answered.
 
 use std::path::{Path, PathBuf};
@@ -67,12 +68,81 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::*;
-    pub fn open_many(_owner: isize) -> Vec<PathBuf> { let _ = (FILTER, ANSWER_LEN); Vec::new() }
-    pub fn reveal(_path: &Path) -> bool { false }
+    use std::process::{Command, Stdio};
+
+    /// The desktop's own file chooser, through the helper programs that show one: zenity (GNOME, and installed
+    /// with Steam almost everywhere, the Steam Deck included), else kdialog (KDE).
+    pub fn open_many(_owner: isize) -> Vec<PathBuf> {
+        let _ = (FILTER, ANSWER_LEN);
+        let tries: [(&str, &[&str]); 2] = [
+            ("zenity", &["--file-selection", "--multiple", "--separator=\n", "--title=Import mission logs",
+                "--file-filter=zar-logs mission log | *.json.gz", "--file-filter=All files | *"]),
+            ("kdialog", &["--getopenfilename", ".", "*.json.gz|zar-logs mission log", "--multiple", "--separate-output",
+                "--title", "Import mission logs"]),
+        ];
+        for (program, args) in tries {
+            // a helper that is not installed fails to start: try the next one. One that ran and was cancelled
+            // has answered.
+            let Ok(out) = Command::new(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output() else { continue };
+            return String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect();
+        }
+        Vec::new()
+    }
+
+    /// The file manager, with the file selected where it can do that (the freedesktop FileManager1 interface that
+    /// Nautilus, Dolphin, Nemo, Thunar and others offer), else its folder.
+    pub fn reveal(path: &Path) -> bool {
+        let uri = file_uri(path);
+        let shown = Command::new("dbus-send")
+            .args(["--session", "--print-reply", "--dest=org.freedesktop.FileManager1", "--type=method_call",
+                "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems"])
+            .arg(format!("array:string:{uri}"))
+            .arg("string:")
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status().is_ok_and(|s| s.success());
+        shown || path.parent().is_some_and(|dir| run_detached(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, &[&dir.display().to_string()]))
+    }
+
+    /// `file://` and the path, every byte outside the unreserved set percent-encoded.
+    pub(super) fn file_uri(path: &Path) -> String {
+        use std::os::unix::ffi::OsStrExt;
+        let mut out = String::from("file://");
+        for &b in path.as_os_str().as_bytes() {
+            if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
+    }
+}
+
+/// Starts a helper program without waiting for it (it is reaped on a thread of its own). False when it could
+/// not be started.
+#[cfg(not(windows))]
+pub fn run_detached(program: &str, args: &[&str]) -> bool {
+    use std::process::{Command, Stdio};
+    match Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    #[test]
+    fn file_uris_are_percent_encoded() {
+        let p = std::path::Path::new("/home/u/.local/share/com.vicplusplus.zar-logs/logs/enc 1_Geode-Cavern.json.gz");
+        assert_eq!(super::imp::file_uri(p), "file:///home/u/.local/share/com.vicplusplus.zar-logs/logs/enc%201_Geode-Cavern.json.gz");
+    }
 }
 
 /// Asks for one or more files to open. Empty when the user cancels. `owner` is the window the dialog belongs to
 /// (0 = none).
 pub fn open_many(owner: isize) -> Vec<PathBuf> { imp::open_many(owner) }
-/// Opens the file's folder in Explorer with the file selected.
+/// Opens the file's folder in Explorer (or the desktop's file manager) with the file selected.
 pub fn reveal(path: &Path) -> bool { imp::reveal(path) }

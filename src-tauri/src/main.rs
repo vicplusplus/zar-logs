@@ -134,9 +134,12 @@ impl App {
 
     // ---- sharing logs ----
     /// The viewer's window, for a dialog to belong to (0 when there is none).
+    #[cfg(windows)]
     fn owner(&self) -> isize {
         self.handle.get().and_then(|h| h.get_webview_window("main")).and_then(|w| w.hwnd().ok()).map_or(0, |h| h.0 as isize)
     }
+    #[cfg(not(windows))]
+    fn owner(&self) -> isize { 0 }
 
     /// Asks which log files to add, and adds them.
     pub fn import(&self) -> Value {
@@ -254,9 +257,18 @@ fn prepare(app: Arc<App>, game: PathBuf) {
 fn capture(app: Arc<App>) {
     loop {
         app.set_status(json!({ "state": "waiting" }));
-        let Some((proc, base)) = zar_logs_core::attach() else {
-            std::thread::sleep(Duration::from_secs(2));
-            continue;
+        let (proc, base) = match zar_logs_core::attach() {
+            Ok(Some(found)) => found,
+            Ok(None) => {
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+            Err(e) => {
+                // the game runs but may not be read (Linux permissions): say so, and look again in a while
+                app.set_status(json!({ "state": "error", "error": e }));
+                std::thread::sleep(Duration::from_secs(5));
+                continue;
+            }
         };
         // the layout belongs to the build that is running: derived from its files when the cache has none
         let game = proc.image_path().and_then(|p| p.parent().map(PathBuf::from));
@@ -437,7 +449,7 @@ cache: {}", game.display(), cache.display());
                 .on_navigation(local_only)
                 .build()?;
             // the in-game overlay: a small always-on-top panel that never takes focus from the game
-            let mut ov = tauri::WebviewWindowBuilder::new(tauri_app, "overlay", url("overlay"))
+            let ov = tauri::WebviewWindowBuilder::new(tauri_app, "overlay", url("overlay"))
                 .title("zar-logs overlay")
                 .on_navigation(local_only)
                 .inner_size(330.0, 176.0)
@@ -449,9 +461,13 @@ cache: {}", game.display(), cache.display());
                 .resizable(false)
                 .focused(false)
                 .visible(state.overlay_on());
-            if let (Some(x), Some(y)) = overlay_at {
-                ov = ov.position(x, y);
-            }
+            // elsewhere the window system's own "never focus this window" does what WS_EX_NOACTIVATE does on Windows
+            #[cfg(not(windows))]
+            let ov = ov.focusable(false);
+            let ov = match overlay_at {
+                (Some(x), Some(y)) => ov.position(x, y),
+                _ => ov,
+            };
             let ov = ov.build()?;
             no_activate(&ov);
             let app = state.clone();

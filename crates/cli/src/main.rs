@@ -61,12 +61,16 @@ fn fail(msg: &str) -> ! {
     std::process::exit(1)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn probe(a: &Args) {
     use zar_logs_core::capture::Decoder;
     use zar_logs_core::mem::Live;
     let lay = layout(&a.layout).unwrap_or_else(|e| fail(&e));
-    let (proc, base) = zar_logs_core::attach().unwrap_or_else(|| fail("the game is not running"));
+    let (proc, base) = match zar_logs_core::attach() {
+        Ok(Some(found)) => found,
+        Ok(None) => fail("the game is not running"),
+        Err(e) => fail(&e),
+    };
     println!("attached read-only to pid {}, GameAssembly.dll at {base:#x}", proc.pid);
     let mut mem = Live::new(proc.clone());
     let mut dec = Decoder::new(&lay, base);
@@ -97,9 +101,9 @@ fn probe(a: &Args) {
     println!("decoder {:?}", dec.stats);
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn probe(_a: &Args) {
-    fail("probe reads a running Windows process")
+    fail("probe reads the running game, on Windows or Linux only")
 }
 
 fn main() {

@@ -4,7 +4,9 @@
 //!   1. the ZAR_GAME_DIR environment variable (explicit override)
 //!   2. the folder of a running zombieassault.exe
 //!   3. Steam's library list: every library in steamapps/libraryfolders.vdf that has the game's app manifest
-//!   4. the default Steam location on C:
+//!   4. the default Steam location on C: (Windows)
+//!
+//! On Linux the game is the same Windows build run by Proton, installed in a Steam library like any other game.
 
 use std::path::{Path, PathBuf};
 
@@ -16,17 +18,30 @@ pub const APP_ID: &str = "2747660";
 /// application data" removes all of it.
 pub const APP_IDENTIFIER: &str = "com.vicplusplus.zar-logs";
 
-/// The data folder: `ZARLOGS_DATA`, else `%LOCALAPPDATA%\<identifier>`. Holds `config.json`, `logs`, `cache`.
+/// The data folder: `ZARLOGS_DATA`, else `%LOCALAPPDATA%\<identifier>` (Windows) or
+/// `$XDG_DATA_HOME/<identifier>`, by default `~/.local/share/<identifier>` (Linux, where the viewer's window data
+/// goes too). Holds `config.json`, `logs`, `cache`.
 pub fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("ZARLOGS_DATA").filter(|v| !v.is_empty()) {
         return PathBuf::from(dir);
     }
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(APP_IDENTIFIER)
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+        .or_else(|| home().map(|h| h.join(".local").join("share")));
+    base.unwrap_or_else(|| PathBuf::from(".")).join(APP_IDENTIFIER)
 }
+
+#[cfg(not(windows))]
+fn home() -> Option<PathBuf> { std::env::var_os("HOME").filter(|v| !v.is_empty()).map(PathBuf::from) }
 
 /// Where the data folder was before the app had an installer (`%LOCALAPPDATA%\zar-logs`, which is now where the
 /// program itself is installed). `None` when the data folder was set by hand.
 pub fn old_data_dir() -> Option<PathBuf> {
+    if cfg!(not(windows)) {
+        return None; // there was never a Linux version without an installer
+    }
     if std::env::var_os("ZARLOGS_DATA").is_some_and(|v| !v.is_empty()) {
         return None;
     }
@@ -37,12 +52,12 @@ const MARKER: &str = "GameAssembly.dll";
 
 fn ok(p: &Path) -> bool { p.join(MARKER).is_file() }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn running() -> Option<PathBuf> {
     let pid = crate::proc::find_pid(crate::capture::GAME_EXE)?;
     crate::proc::Process::open(pid).ok()?.image_path()?.parent().map(Path::to_path_buf)
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn running() -> Option<PathBuf> { None }
 
 #[cfg(windows)]
@@ -62,7 +77,8 @@ fn reg_string(local_machine: bool, key: &str, name: &str) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..chars]))
 }
 
-/// Steam installation folders that exist: ZAR_STEAM_DIR, the registry, then the usual place.
+/// Steam installation folders that exist: ZAR_STEAM_DIR, then the registry and the usual place (Windows) or the
+/// usual places of the native, Flatpak and Snap Steam (Linux).
 pub fn steam_roots() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut add = |p: PathBuf| {
@@ -84,6 +100,15 @@ pub fn steam_roots() -> Vec<PathBuf> {
             }
         }
         add(PathBuf::from(r"C:\Program Files (x86)\Steam"));
+    }
+    #[cfg(not(windows))]
+    if let Some(h) = home() {
+        for rel in [".steam/steam", ".local/share/Steam", ".var/app/com.valvesoftware.Steam/.local/share/Steam", "snap/steam/common/.local/share/Steam"] {
+            // ~/.steam/steam is usually a link to ~/.local/share/Steam: the same folder once
+            if let Ok(p) = h.join(rel).canonicalize() {
+                add(p);
+            }
+        }
     }
     out
 }
